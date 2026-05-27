@@ -2,6 +2,30 @@
 
 All notable changes to **Stride Lite** are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] — 2026-05-27
+
+### Added
+
+- **`stride-lite-workflow` orchestrator skill** at `skills/stride-lite-workflow/SKILL.md` — the file-based equivalent of the full Stride plugin's `stride-workflow`. Takes a goal-directory path as input and walks the goal through an eight-step task lifecycle: (1) select next incomplete task (first `taskN.md` without `## Completion Summary`), (2) execute `## before_task` hook from `.stride_lite.md`, (3) dispatch `stride-lite:task-explorer`, (4) implementation, (5) execute `## after_task` hook, (6) dispatch `stride-lite:task-reviewer`, (7) review-loop decision (approved → proceed; changes_requested → loop back to step 4, capped at **3 iterations** by default via the optional `max_review_iterations` input), (8) append `## Completion Summary` to the task file; if this was the final task, also append `## Completion Summary` to `goal.md` and execute the `## after_goal` hook.
+- **Invocation surface: Skill tool** with `skill: stride-lite-workflow` and the goal-directory path as input. No new slash command in this release — matches the full Stride plugin's `stride-workflow` invocation pattern.
+- **Hook execution contract** documented in the skill body: read `.stride_lite.md` from the project root, locate `## before_task` / `## after_task` / `## after_goal` sections, parse the fenced bash block, execute each line one at a time via Bash, capture aggregated exit_code/output/duration_ms, treat any non-zero exit on blocking hooks as a hard stop.
+
+### Changed
+
+- **BREAKING (contract semantics, not file shape):** The v0.2.0 init contract previously declared `.stride_lite.md` hooks "static configuration — stride-lite does NOT execute them". As of v0.8.0, the `stride-lite-workflow` skill DOES execute the three hooks at the corresponding lifecycle points. The `.stride_lite.md` file shape itself remains byte-equivalent (same four sections: `## email`, `## before_task`, `## after_task`, `## after_goal`), so existing files continue to work — but commands in the hook sections now run when the workflow skill is invoked. Users who put placeholder content there during v0.2.0–v0.7.0 should review their `.stride_lite.md` before invoking `stride-lite-workflow` for the first time.
+- **stride-lite-init SKILL.md** language updated to reflect the new contract: the init skill itself remains a pure scaffolder (it writes the file and exits, executing nothing), but its description, NOT-do block, success-message template, canonical template intro, and pitfalls section no longer claim the hooks are "static config — not executed by stride-lite". The new language cross-references `stride-lite-workflow` as the executor.
+- **README.md and AGENTS.md** project-overview language updated: the previous "no hooks" / "no lifecycle" claims now read as "no server-mediated lifecycle" with explicit notes that the workflow skill executes `.stride_lite.md` hooks inline against the file tree.
+
+### Notes
+
+- **No new slash command.** The workflow skill is dispatched via the Skill tool directly. A `/stride-lite:work <path>` command surface may follow in a future release if it earns its complexity.
+- **No changes to existing agents.** `agents/create-decomposer.md`, `agents/task-explorer.md`, and `agents/task-reviewer.md` are byte-equivalent to their v0.7.0 state. The workflow skill consumes them via Claude Code's Agent tool — it does not amend their contracts.
+- **v0.4.0 per-task template byte-parity preserved.** This release does not modify either `stride-lite-create-goal/SKILL.md` or `stride-lite-create-task/SKILL.md`; the parity diff still returns empty.
+- **Smoke test unchanged.** `test/smoke.sh` does not assert on skills or the workflow surface, so v0.8.0 ships without modifying the test — it continues to exit 0 with `24 passed, 0 failed`.
+- **Bash scope** for the workflow skill follows the v0.7.0 task-reviewer's discipline: explicit ✅ list (hook execution, `git rev-parse --show-toplevel`, `ls`/`test -f`/`find` for directory navigation) and ❌ list (no `mix`/`npm`/`cargo`, no `curl`/`wget`/`nc`, no mutating git). User-supplied hook commands in `.stride_lite.md` are executed verbatim — the user is responsible for their content.
+
+[0.8.0]: https://github.com/cheezy/stride-lite/releases/tag/v0.8.0
+
 ## [0.7.0] — 2026-05-27
 
 ### Added

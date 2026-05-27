@@ -1,6 +1,6 @@
 ---
 name: stride-lite-init
-description: Use to scaffold a `.stride_lite.md` config file in the current working directory containing the four canonical sections (`## email`, `## before_task`, `## after_task`, `## after_goal`). The skill writes one file and prints a success message instructing the user to fill in the fields. Refuses to clobber an existing `.stride_lite.md` unless `--force` is supplied. Never executes the hook sections — they are static configuration the user fills in. Never POSTs to any API. Invoke when the user types `/stride-lite:init` (optionally with `--force`).
+description: Use to scaffold a `.stride_lite.md` config file in the current working directory containing the four canonical sections (`## email`, `## before_task`, `## after_task`, `## after_goal`). The skill writes one file and prints a success message instructing the user to fill in the fields. Refuses to clobber an existing `.stride_lite.md` unless `--force` is supplied. The init command itself never executes the hook sections (it is purely a scaffolder); the `stride-lite-workflow` skill (v0.8.0+) executes them at the corresponding lifecycle points (before_task before each task, after_task after each implementation, after_goal after the final task in a goal). Never POSTs to any API. Invoke when the user types `/stride-lite:init` (optionally with `--force`).
 skills_version: "1.0"
 ---
 
@@ -21,7 +21,7 @@ That is the entire side effect.
 ## What this skill does NOT do
 
 - **Never POSTs to any API.** stride-lite remains a "no network" plugin.
-- **Never executes the hook sections.** `## before_task`, `## after_task`, and `## after_goal` are static configuration in v0.2.0. Whether a future release wires them into a lifecycle is deliberately deferred — this skill must not introduce one.
+- **Never executes the hook sections.** The init skill is a pure scaffolder — it writes the template, prints the success message, exits. The hook sections (`## before_task`, `## after_task`, `## after_goal`) are executed by the `stride-lite-workflow` skill (v0.8.0+), not by this skill.
 - **Never writes outside the current working directory.** No absolute paths, no parent traversal (`../`), no `$HOME` resolution. The target is always `./.stride_lite.md` relative to the cwd at invocation time.
 - **Never clobbers an existing `.stride_lite.md`** unless `--force` is supplied. Mirrors the safety posture of `install.sh:54-67`.
 - **Never asks the user mid-flow.** The invocation is fire-and-forget.
@@ -78,11 +78,11 @@ Wrote .stride_lite.md to the current directory.
 
 Open the file and fill in the four sections:
   - ## email — your contact email
-  - ## before_task — the shell commands you want to run before claiming a task (static config in v0.2.0; stride-lite does not execute them)
-  - ## after_task — the shell commands you want to run after completing a task (same caveat)
-  - ## after_goal — the shell commands you want to run when a goal finishes (same caveat)
+  - ## before_task — the shell commands you want to run before starting each task (executed by stride-lite-workflow at the start of each task iteration)
+  - ## after_task — the shell commands you want to run after each task's implementation (executed by stride-lite-workflow before the reviewer dispatches)
+  - ## after_goal — the shell commands you want to run when the final task in a goal completes (executed by stride-lite-workflow after the goal-level Completion Summary is written)
 
-The hook sections are documentation only in v0.2.0 — stride-lite will not run them. They match the shape of the full Stride plugin's .stride.md so your snippets transfer across plugins later if you wire them up.
+The hook sections are executed by the stride-lite-workflow skill at the corresponding lifecycle points (v0.8.0+). The format mirrors the full Stride plugin's .stride.md so your snippets transfer across plugins.
 ```
 
 That is the entire stdout output. The skill does not chain into any follow-up command.
@@ -96,7 +96,7 @@ The skill writes this exact text to `./.stride_lite.md`. Keep the section order 
 
 This file is created by `/stride-lite:init`. Fill in the fields below.
 
-**Note (v0.2.0):** The hook sections are static configuration — stride-lite does not execute them. The format mirrors the full Stride plugin's `.stride.md` so your snippets can transfer between plugins later.
+**Note (v0.8.0+):** The hook sections are executed by the `stride-lite-workflow` skill at the corresponding lifecycle points (`before_task` at the start of each task, `after_task` after each implementation, `after_goal` after the final task in a goal). The format mirrors the full Stride plugin's `.stride.md` so your snippets transfer across plugins.
 
 ## email
 
@@ -120,7 +120,7 @@ your-email@example.com
 
 ## Pitfalls
 
-- **Don't execute the hook sections.** They are static config the user fills in. stride-lite has no lifecycle in v0.2.0 and must not grow one in this change.
+- **Don't execute the hook sections in THIS skill.** The init skill is a pure scaffolder — write the file, print the message, exit. Hook execution is the `stride-lite-workflow` skill's job (added in v0.8.0).
 - **Don't omit any of the four sections.** The template contract is exact: `## email`, `## before_task`, `## after_task`, `## after_goal`, in that order.
 - **Don't clobber an existing `.stride_lite.md` without `--force`.** Refuse and exit non-zero with a clear message pointing to the flag.
 - **Don't write the file anywhere except the cwd.** No absolute paths, no parent traversal, no `$HOME` or `$XDG_CONFIG_HOME` resolution.
