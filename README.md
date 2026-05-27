@@ -111,6 +111,24 @@ After writing, the command prints a multi-line message listing the four sections
 
 Both flags accept relative or absolute paths. The output base is created with `mkdir -p` if it does not exist.
 
+## Subagents
+
+In addition to the three slash commands, stride-lite ships subagents that you can dispatch directly via Claude Code's `Agent` tool.
+
+### `stride-lite:task-explorer`
+
+Enriches a generated task markdown file with concrete codebase context. The agent takes the task-file path as input, parses the `## Key files`, `## Patterns to follow`, `## Where`, and `## Testing strategy` sections, runs read-only codebase exploration (Read each key_file, Grep for patterns, Glob for related tests), and appends an `## Exploration Report` section to the bottom of the input file with the findings.
+
+Invoke it via Claude Code's `Agent` tool with `subagent_type: stride-lite:task-explorer` and the task-file path as the prompt:
+
+```
+Dispatch stride-lite:task-explorer on docs/implementation/PENDING/add-notifications/task1.md
+```
+
+After it runs, the input file gains a new `## Exploration Report` section at the bottom containing File state per key_file, Pattern matches, Related tests, and Implementation notes. All prior sections of the task file (Description, Why, What, Where, Acceptance criteria, etc.) remain byte-equivalent to the pre-run state.
+
+**Re-runs replace in place.** Dispatching the agent a second time against the same file does NOT append a duplicate section or use a numeric discriminator like `## Exploration Report 2` — it slices from the existing `## Exploration Report` heading through EOF and overwrites with the freshly-generated content. The contract assumes the report is always the last section in the file; if you've manually added content below it after a prior run, the agent will refuse to mutate and surface a clear error.
+
 ## Output layout
 
 With both defaults left in place, every invocation lands under `docs/implementation/PENDING/`:

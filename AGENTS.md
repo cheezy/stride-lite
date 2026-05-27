@@ -21,6 +21,7 @@ stride-lite/
     stride-lite-init/SKILL.md          ← .stride_lite.md scaffold flow (no hook execution)
   agents/
     create-decomposer.md        ← subagent: prompt + requirements + mode → fenced YAML
+    task-explorer.md            ← subagent: reads a task file, appends-or-replaces ## Exploration Report section in place
   lib/
     parse_args.md               ← extract prompt + --requirements-dir + --output-dir
     load_requirements_dir.md    ← read a directory, concatenate text files

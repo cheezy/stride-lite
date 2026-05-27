@@ -2,6 +2,23 @@
 
 All notable changes to **Stride Lite** are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] — 2026-05-27
+
+### Added
+
+- **`stride-lite:task-explorer` subagent** at `agents/task-explorer.md` — enriches a generated task markdown file with concrete codebase context. Takes the task-file path as input, parses the `## Key files`, `## Patterns to follow`, `## Where`, and `## Testing strategy` sections, runs read-only codebase exploration (Read each key_file, Grep for patterns, Glob for related tests), and appends an `## Exploration Report` section to the bottom of the input file with findings organized as File state per key_file, Pattern matches, Related tests, and Implementation notes.
+- **Re-run semantic: replace in place.** Dispatching the agent against a file that already has an `## Exploration Report` section REPLACES that section in place (slice from the heading through EOF, overwrite with freshly-generated content). No duplicate sections, no numeric discriminators like `## Exploration Report 2`. If the existing heading is NOT at the last position (the user manually added content below it after a prior run), the agent refuses to mutate and surfaces a clear error rather than guessing the slice boundary.
+- **Invocation surface: Claude Code `Agent` tool with `subagent_type: stride-lite:task-explorer`** and the task-file path as the prompt. No new slash command or surface skill in this release — the agent is dispatched directly. A `/stride-lite:explore-task <path>` command surface may follow in a future release if it earns its complexity.
+
+### Notes
+
+- **Append-only, file-scoped mutation.** The agent's `Edit` and `Write` tools target ONLY the input task file path. No traversal, no edits elsewhere in the filesystem. Sections of the task file above the `## Exploration Report` remain byte-equivalent across runs.
+- **No new network or code-execution surface.** The agent's tool list is `Read, Grep, Glob, Edit, Write` — no Bash, no WebFetch.
+- **Per-task template byte-parity preserved.** This release does not modify either `stride-lite-create-goal/SKILL.md` or `stride-lite-create-task/SKILL.md`; the v0.4.0 invariant that the two per-task template blocks are byte-equivalent still holds (diff returns empty).
+- **Smoke test unchanged.** `stride-lite/test/smoke.sh` does not assert on agents, so v0.6.0 ships without modifying the test — it continues to exit 0 with `24 passed, 0 failed`.
+
+[0.6.0]: https://github.com/cheezy/stride-lite/releases/tag/v0.6.0
+
 ## [0.5.0] — 2026-05-27
 
 ### Changed
