@@ -129,6 +129,24 @@ After it runs, the input file gains a new `## Exploration Report` section at the
 
 **Re-runs replace in place.** Dispatching the agent a second time against the same file does NOT append a duplicate section or use a numeric discriminator like `## Exploration Report 2` — it slices from the existing `## Exploration Report` heading through EOF and overwrites with the freshly-generated content. The contract assumes the report is always the last section in the file; if you've manually added content below it after a prior run, the agent will refuse to mutate and surface a clear error.
 
+### `stride-lite:task-reviewer`
+
+Reviews code changes against a task markdown file's acceptance criteria, pitfalls, patterns, and testing strategy — the equivalent of the full Stride plugin's task-reviewer, adapted for the file-based contract. The agent takes the task-file path (required) plus an optional `diff_range` (defaults to `HEAD` = working-tree vs HEAD), captures the diff via `git diff <range>`, evaluates each acceptance criterion against the diff (met / not_met with file:line evidence), checks pitfall avoidance and pattern compliance and testing-strategy coverage, and appends a `## Review Report` section to the bottom of the input file with a prose summary line, a categorized issue list (Critical / Important / Minor), a per-acceptance-criterion table, and an embedded structured JSON block matching the stride task-reviewer's `reviewer_result` schema for downstream tooling.
+
+Invoke it via Claude Code's `Agent` tool with `subagent_type: stride-lite:task-reviewer` and the task-file path (and optional diff range) as the prompt:
+
+```
+Dispatch stride-lite:task-reviewer on docs/implementation/PENDING/add-notifications/task1.md
+```
+
+After it runs, the input file gains a new `## Review Report` section at the bottom. All prior sections remain byte-equivalent.
+
+**Re-runs replace in place** — same contract as task-explorer. Dispatching the agent a second time slices from the existing `## Review Report` heading through EOF and overwrites.
+
+**Convention when using both subagents:** run `stride-lite:task-explorer` FIRST (during planning, before implementation) and `stride-lite:task-reviewer` LAST (after implementation). Both reports can coexist on the same file — Exploration above, Review at the bottom. If you reverse the order (reviewer first, explorer second), the explorer's "always last" contract from v0.6.0 will refuse to mutate; remove the Review Report manually and re-run explorer to recover.
+
+**Bash scope:** task-reviewer's tool list includes `Bash` (the only stride-lite agent that has it) so it can run `git diff` / `git log` to capture the change set. Bash is explicitly scoped to read-only git commands only — no `mix test`, `npm run`, `curl`, no mutating git operations (`commit`/`push`/`checkout`/`reset`).
+
 ## Output layout
 
 With both defaults left in place, every invocation lands under `docs/implementation/PENDING/`:

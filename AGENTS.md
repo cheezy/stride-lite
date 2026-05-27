@@ -22,6 +22,7 @@ stride-lite/
   agents/
     create-decomposer.md        ← subagent: prompt + requirements + mode → fenced YAML
     task-explorer.md            ← subagent: reads a task file, appends-or-replaces ## Exploration Report section in place
+    task-reviewer.md            ← subagent: reads a task file + git diff, appends-or-replaces ## Review Report section in place
   lib/
     parse_args.md               ← extract prompt + --requirements-dir + --output-dir
     load_requirements_dir.md    ← read a directory, concatenate text files

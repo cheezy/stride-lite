@@ -2,6 +2,25 @@
 
 All notable changes to **Stride Lite** are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] — 2026-05-27
+
+### Added
+
+- **`stride-lite:task-reviewer` subagent** at `agents/task-reviewer.md` — reviews code changes against a stride-lite task markdown file's acceptance criteria, pitfalls, patterns, and testing strategy. Takes the task-file path plus an optional `diff_range` (defaults to `HEAD` = working-tree vs HEAD), captures the diff via `git diff <range>`, evaluates each acceptance criterion against the diff (met / not_met with file:line evidence), checks pitfall avoidance and pattern compliance and testing-strategy coverage, categorizes findings as Critical / Important / Minor, and appends a `## Review Report` section to the bottom of the input file with a prose summary line, the issue list, a per-acceptance-criterion table, and an embedded structured JSON block matching stride's `reviewer_result` schema (schema_version `"1.1"`) for downstream tooling.
+- **Re-run semantic: replace in place.** Identical 3-state logic to the v0.6.0 task-explorer (State A append / State B replace / State C refuse), scoped to the `## Review Report` heading. No duplicate sections, no numeric discriminators.
+- **Invocation surface: Claude Code `Agent` tool with `subagent_type: stride-lite:task-reviewer`** and the task-file path (plus optional diff range) as the prompt. No new slash command or surface skill — same dispatch pattern as the v0.6.0 task-explorer.
+
+### Notes
+
+- **Convention with task-explorer:** run `stride-lite:task-explorer` FIRST (during planning, before implementation) and `stride-lite:task-reviewer` LAST (after implementation). Both reports can coexist on the same task file — Exploration above, Review at the bottom. If the order is reversed (reviewer first, explorer second), the v0.6.0 task-explorer's "always last" contract will refuse to mutate; recover by manually removing the Review Report and re-running explorer.
+- **Bash scope.** task-reviewer is the first stride-lite agent with `Bash` in its tool list — required for `git diff` / `git log`. The agent body explicitly scopes Bash to read-only git operations only: no `mix`, `npm`, `cargo`, `curl`, `wget`, no mutating git commands (`commit`/`push`/`checkout`/`reset`). The body documents both ✅ and ❌ examples to prevent scope creep.
+- **No-network and file-mutation-scoped contracts preserved.** The agent does NOT have WebFetch. `Edit` and `Write` target ONLY the input task file path — no traversal, no mutations elsewhere.
+- **v0.6.0 task-explorer unchanged.** The two-agent interaction is documented in the new agent's body, not enforced by retrofitting the prior contract. `agents/task-explorer.md` is byte-equivalent to its v0.6.0 state in this release.
+- **Per-task template byte-parity preserved.** This release does not modify either SKILL.md; the v0.4.0 invariant that the two per-task template blocks are byte-equivalent still holds.
+- **Smoke test unchanged.** `test/smoke.sh` does not assert on agents, so v0.7.0 ships without modifying the test — it continues to exit 0 with `24 passed, 0 failed`.
+
+[0.7.0]: https://github.com/cheezy/stride-lite/releases/tag/v0.7.0
+
 ## [0.6.0] — 2026-05-27
 
 ### Added
