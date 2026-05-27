@@ -52,9 +52,10 @@ When extending the plugin, add new helpers under `lib/`, new agents under `agent
 ## Hard rules for agents working on this codebase
 
 - **Never add Stride API calls.** Stride Lite's contract is "no network." If a feature seems to require an API call, it belongs in the full Stride plugin (`stride/`), not here.
-- **Never change the default paths** without coordinating with the README, the slash commands, and both skill files in the same commit. The two defaults are the cross-skill contract:
+- **Never change the default paths** without coordinating with the README, the slash commands, both create skill files, AND the `stride-lite-workflow` SKILL.md's terminal-move step in the same commit. The two defaults plus the workflow's archive sibling are the cross-skill contract:
   - `--requirements-dir` defaults to `docs/requirements`.
-  - `--output-dir` defaults to `docs/implementation/PENDING`.
+  - `--output-dir` defaults to `docs/implementation/PENDING` (the "in flight" location).
+  - `docs/implementation/IMPLEMENTED` (the archive location populated by `stride-lite-workflow`'s terminal PENDING→IMPLEMENTED move at goal close-out, added in v0.10.0). Both `--output-dir` and the archive base must move together if either changes; otherwise the workflow's `/PENDING/` substring substitution breaks silently.
 - **Never diverge the task markdown template** between `stride-lite-create-goal/SKILL.md` and `stride-lite-create-task/SKILL.md`. The two skills MUST render task markdown identically. The template is reproduced verbatim in both files so divergence is visible in code review.
 - **Never raise the plugin version** without a matching CHANGELOG entry and a plugin.json bump in the same commit.
 - **Never list more than 8 child tasks in a goal.** The `create-decomposer` agent enforces this cap; downstream tools (the surface skills) reject decomposer output that violates it.

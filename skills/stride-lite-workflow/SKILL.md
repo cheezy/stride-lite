@@ -126,7 +126,54 @@ Append a `## Completion Summary` section to the active task file at EOF. The sec
 - If `task(K+1).md` **does NOT exist** → this was the final task in the goal. Continue with the goal-level wrap-up:
   1. Append a `## Completion Summary` section to `goal.md` (the goal-level summary). Content: one-paragraph synthesis of the work across all child tasks, bullet list of completed tasks with one-line each, total elapsed time if trackable.
   2. The append to `goal.md` is performed via `Edit` or `Write`; the harness auto-fires the `## after_goal` section from `.stride_lite.md` as a **PostToolUse** hook when (a) the file path ends in `goal.md` and (b) the written content contains the literal string `## Completion Summary`. PostToolUse cannot roll back the write, so `after_goal` is **advisory** — a failure emits structured failure JSON on stdout for the user to inspect but does not stop or roll back. You do NOT execute `.stride_lite.md` hook sections directly in this step.
-  3. Workflow complete. Stop.
+  3. **Move the goal directory from `PENDING/` to `IMPLEMENTED/`.** After the `after_goal` hook has fired, archive the completed goal by moving the goal directory from `docs/implementation/PENDING/<slug>/` to `docs/implementation/IMPLEMENTED/<slug>/`. Four behavioral details:
+
+     - **Timing.** This move happens AFTER `after_goal` fires — the user's hook sees the still-PENDING path, matching what the hook was scoped to handle. Never move before the hook.
+     - **After-goal-failure guard.** If the harness emitted a structured failure JSON for the `after_goal` hook (`"status": "failed"`), do NOT move the directory. Leave it in `PENDING/` so the user can inspect the failure and re-trigger. A clean no-op (no `after_goal` section, missing `.stride_lite.md`, empty fenced block) is NOT a failure — proceed with the move.
+     - **Non-`/PENDING/` path.** If `goal_directory_path` (after stripping the trailing slash) does not contain `/PENDING/` as a directory segment — for example, the user passed a custom `--output-dir` to `/stride-lite:create-goal` and the goal lives at `docs/custom-archive/<slug>/` — log a warning to stderr (`stride-lite-workflow: goal directory not under PENDING — skipping move; you can move it manually to your archive location`) and skip the move. Do NOT fail the workflow.
+     - **Move tool selection.** Try `git mv` first when (a) `git rev-parse --is-inside-work-tree` succeeds and (b) `git ls-files "$goal_path"` returns a non-empty list (the goal directory's files are tracked). This preserves rename history. Otherwise fall back to plain `mv`.
+     - **Collision suffixing.** If the target `IMPLEMENTED/<slug>/` already exists, suffix the destination with `-2`, `-3`, ... up to a 1000-iteration cap, mirroring `lib/resolve_output_path.md`'s semantics exactly (start at `n=2`, probe with `[ ! -e "$candidate" ]`, never overwrite, cap exhaustion emits a stderr warning and skips the move). Never overwrite an existing IMPLEMENTED entry.
+     - **Filesystem-mv failure.** If `mv` / `git mv` returns non-zero (permissions, disk full, cross-device, etc.), log the error to stderr and skip the move — the goal work is complete, a failed archive is a recovery operation. Do NOT fail the workflow.
+
+     **Reference bash idiom** (use as a template; adapt variable names freely):
+
+     ```bash
+     goal_path="${goal_directory_path%/}"          # strip trailing slash
+     slug="${goal_path##*/}"                       # basename = slug
+
+     case "$goal_path" in
+       */PENDING/*)
+         pending_parent="${goal_path%/PENDING/*}"  # path up to /PENDING parent
+         impl_base="${pending_parent%/}/IMPLEMENTED"
+         candidate="${impl_base}/${slug}"
+         n=2
+         while [ -e "$candidate" ]; do
+           candidate="${impl_base}/${slug}-${n}"
+           n=$(( n + 1 ))
+           if [ "$n" -gt 1000 ]; then
+             echo "stride-lite-workflow: refusing to scan past -1000 collisions for IMPLEMENTED destination" >&2
+             candidate=""; break
+           fi
+         done
+         if [ -n "$candidate" ]; then
+           mkdir -p "$impl_base"
+           if git rev-parse --is-inside-work-tree > /dev/null 2>&1 \
+              && [ -n "$(git ls-files "$goal_path")" ]; then
+             git mv "$goal_path" "$candidate" \
+               || { echo "stride-lite-workflow: git mv failed; leaving in PENDING" >&2; }
+           else
+             mv "$goal_path" "$candidate" \
+               || { echo "stride-lite-workflow: mv failed; leaving in PENDING" >&2; }
+           fi
+         fi
+         ;;
+       *)
+         echo "stride-lite-workflow: goal directory not under PENDING — skipping move; you can move it manually to your archive location" >&2
+         ;;
+     esac
+     ```
+
+  4. Workflow complete. Stop.
 
 ## Hook execution contract
 
@@ -155,13 +202,17 @@ The workflow skill's Bash usage is scoped to a specific set of operations. Expli
 - ✅ `git diff HEAD` — captured by the task-reviewer agent in Step 6 (not directly by this skill; the agent has its own Bash grant).
 - ✅ `ls`, `test -f`, `find` — for filesystem navigation inside the goal directory (listing taskN.md files, checking for task(K+1).md existence).
 - ✅ `git rev-parse --show-toplevel` — for locating the project root (e.g., to inspect `.stride_lite.md` for the user, not to execute it).
+- ✅ `mv` and `git mv` — for the terminal-move step in Step 8's final-task branch only (PENDING → IMPLEMENTED archive move). Forbidden elsewhere in the skill body.
+- ✅ `git rev-parse --is-inside-work-tree` — for the terminal-move step in Step 8's final-task branch only (detecting whether to prefer `git mv` over plain `mv`). Forbidden elsewhere in the skill body.
+- ✅ `git ls-files <path>` — for the terminal-move step in Step 8's final-task branch only (detecting whether the goal directory's files are git-tracked before invoking `git mv`). Forbidden elsewhere in the skill body.
+- ✅ `mkdir -p <impl_base>` — for the terminal-move step only (ensuring the IMPLEMENTED parent directory exists before `mv` / `git mv` lands the goal into it). Forbidden elsewhere in the skill body.
 
 Explicit ❌ anti-examples — the workflow skill MUST NEVER directly invoke:
 
 - ❌ `mix test`, `mix compile`, `npm test`, `npm run`, `cargo test`, `cargo build` — these belong in the user's `## after_task` hook, not in the skill body.
 - ❌ `curl`, `wget`, `nc` — no network calls (matches the v0.7.0 task-reviewer's discipline).
 - ❌ `git commit`, `git push`, `git checkout`, `git reset`, `git merge`, `git rebase` — no mutating git operations.
-- ❌ `rm`, `mv`, `cp` (except inside user-supplied hook bash blocks) — no filesystem mutation outside the documented append-only task/goal file mutations.
+- ❌ `rm`, `cp` and `mv` outside the documented narrow uses (user-supplied hook bash blocks; the terminal-move step in Step 8's final-task branch carving out `mv` / `git mv` / `mkdir -p` as listed in the ✅ block above) — no filesystem mutation outside the documented append-only task/goal file mutations plus the terminal archive move.
 
 If the user wants build/test/lint runs as part of the workflow, they put them in `## after_task` in `.stride_lite.md`. The harness's PreToolUse hook on the Step 6 reviewer dispatch executes them verbatim — that's how the scope expands by configuration, not by skill-body code.
 

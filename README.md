@@ -178,34 +178,37 @@ Activate stride-lite-workflow on docs/implementation/PENDING/add-notifications/
 5. **Run the `## after_task` hook** from `.stride_lite.md` (blocking — typically the place for `mix test`, `npm run lint`, etc.)
 6. **Dispatch `stride-lite:task-reviewer`** against the task file with the working-tree diff (appends `## Review Report`)
 7. **Review-loop decision** — parse the review's status: `approved` → continue; `changes_requested` → loop back to step 4 (capped at **3 iterations** by default; configurable via `max_review_iterations`)
-8. **Completion summary** — append `## Completion Summary` to the task file. If this was the final task in the goal (no `task(K+1).md` exists), also append `## Completion Summary` to `goal.md` and run the `## after_goal` hook
+8. **Completion summary + archive move** — append `## Completion Summary` to the task file. If this was the final task in the goal (no `task(K+1).md` exists), also append `## Completion Summary` to `goal.md`, run the `## after_goal` hook, and (as of **v0.10.0**) move the goal directory from `PENDING/` to `IMPLEMENTED/` (skipped with a warning if `after_goal` failed or the goal isn't under `/PENDING/`)
 
 The skill never POSTs to any API — it's a file-only orchestrator wrapping the existing surface (create-goal, create-task, init, task-explorer, task-reviewer). See `skills/stride-lite-workflow/SKILL.md` for the full contract.
 
 ## Output layout
 
-With both defaults left in place, every invocation lands under `docs/implementation/PENDING/`:
+With both defaults left in place, every invocation lands under `docs/implementation/PENDING/`. Goals stay there while they are in flight; once `stride-lite-workflow` finishes a goal, its directory is moved to a sibling `IMPLEMENTED/` archive:
 
 ```
 docs/
   implementation/
     PENDING/
-      add-notifications/         ← goal directory (from /stride-lite:create-goal)
+      add-notifications/         ← goal directory in flight (from /stride-lite:create-goal)
         goal.md
         task1.md
         task2.md
         ...
-      refactor-auth/             ← another goal directory
-        goal.md
-        task1.md
-        ...
-      tasks/                     ← single-task sibling directory
+      tasks/                     ← single-task sibling directory (not moved by the workflow)
         fix-typo-login-button.md ← from /stride-lite:create-task
         bump-deps.md
+        ...
+    IMPLEMENTED/                 ← archive populated by stride-lite-workflow's terminal move
+      refactor-auth/             ← moved here after every task and goal.md got a Completion Summary
+        goal.md
+        task1.md
         ...
 ```
 
 `goal.md` and each `taskN.md` are plain markdown — readable in any editor, reviewable in any PR, diffable in `git log`. The structure mirrors the Stride goal/task field contracts so the docs can be hand-copied (or scripted) into a Stride board later without reformatting.
+
+The terminal PENDING → IMPLEMENTED move (added in **v0.10.0**) is performed by the workflow skill itself, after the `## after_goal` hook fires and before exit. It prefers `git mv` when the goal directory is git-tracked (preserves history); falls back to plain `mv` otherwise. Collisions on `IMPLEMENTED/<slug>/` resolve with `-2`, `-3`, … suffixes per `lib/resolve_output_path.md`'s semantics, so the archive never overwrites. Goals living outside `/PENDING/` (e.g., a custom `--output-dir` was used) are left where they are with a warning. Single-task files under `PENDING/tasks/` are NEVER moved — only goal directories.
 
 ## What this plugin does NOT do
 

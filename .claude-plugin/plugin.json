@@ -1,7 +1,7 @@
 {
   "name": "stride-lite",
   "description": "Lightweight companion plugin for Stride kanban — minimal scaffolding for task lifecycle workflows",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "author": {
     "name": "Jeff Morgan",
     "email": "cheezy@letstango.ca"

@@ -2,6 +2,39 @@
 
 All notable changes to **Stride Lite** are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] — 2026-05-27
+
+### Added
+
+- **Terminal PENDING → IMPLEMENTED archive move** in `skills/stride-lite-workflow/SKILL.md` Step 8's final-task branch. After the harness auto-fires the `## after_goal` hook on the goal.md write, the workflow moves the goal directory from `docs/implementation/PENDING/<slug>/` to `docs/implementation/IMPLEMENTED/<slug>/` and then exits. Four behavioral details land together:
+  - **Timing.** The move happens AFTER `after_goal` fires — the user's hook sees the still-PENDING path, matching what the hook was scoped to handle.
+  - **After-goal-failure guard.** If the harness emitted a structured failure JSON for `after_goal` (`"status": "failed"`), the move is skipped and the goal directory stays in `PENDING/` so the user can inspect and re-trigger. A clean no-op (no `after_goal` section, missing `.stride_lite.md`, empty fenced block) is NOT a failure and proceeds with the move.
+  - **Non-`/PENDING/` path handling.** If `goal_directory_path` does not contain `/PENDING/` as a directory segment (custom `--output-dir`), the workflow logs a warning to stderr and skips the move without failing the workflow.
+  - **Move tool selection.** Prefers `git mv` when (a) `git rev-parse --is-inside-work-tree` succeeds and (b) `git ls-files <path>` is non-empty — this preserves rename history for users who commit their goal directories. Falls back to plain `mv` otherwise.
+  - **Collision suffixing.** If `IMPLEMENTED/<slug>/` already exists, the target is suffixed with `-2`, `-3`, ... up to a 1000-iteration safety cap, mirroring `lib/resolve_output_path.md`'s semantics exactly (start at `n=2`, never overwrite, cap exhaustion logs a stderr warning and skips the move). The IMPLEMENTED archive never overwrites prior entries.
+  - **Filesystem-mv failure handling.** If `mv` / `git mv` returns non-zero (permissions, disk full, cross-device), the workflow logs the error to stderr and exits cleanly — the goal work is complete, a failed archive is a recovery operation. The workflow itself does not fail because of an archive-move failure.
+- **Reference bash idiom** for the move embedded in Step 8 sub-step 3 of `stride-lite-workflow/SKILL.md`. The snippet shows the exact parameter-expansion idioms (`${goal_path%/}`, `${goal_path##*/}`, `${goal_path%/PENDING/*}`), the `n=2..1000` collision loop, and the `git mv` / `mv` selector. Implementors transliterate the snippet at runtime without reinventing the path arithmetic.
+
+### Changed
+
+- **`stride-lite-workflow` SKILL.md `## Bash scope` ✅ list** expanded with four scoped exceptions, each annotated "for the terminal-move step in Step 8's final-task branch only": `mv` / `git mv`, `git rev-parse --is-inside-work-tree`, `git ls-files <path>`, `mkdir -p <impl_base>`. The existing ❌ bullet for `rm` / `cp` / `mv` is amended in place to reflect the narrow terminal-move carve-out (the previous "except inside user-supplied hook bash blocks" exception is preserved alongside the new carve-out).
+- **`stride-lite-workflow` SKILL.md `### Step 8` final-task branch** sub-list grew from 3 numbered sub-steps to 4 (the new sub-step 3 is the terminal move; the old sub-step 3 "Workflow complete. Stop." renumbers to 4). The eight-step heading structure (`### Step 1` through `### Step 8`) is preserved verbatim — V5 still asserts `grep -cE '^### Step [1-8]'` == 8.
+- **README.md `## Output layout`** tree diagram updated to show `PENDING/` and `IMPLEMENTED/` as sibling directories under `docs/implementation/`, with a follow-up paragraph documenting that the workflow's terminal move populates IMPLEMENTED, that `git mv` is preferred when tracked, that collisions suffix with `-2`/`-3`/..., that non-`/PENDING/` paths skip with a warning, and that single-task files under `PENDING/tasks/` are NEVER moved (only goal directories).
+- **README.md `## Workflow`** step 8 bullet renamed from "Completion summary" to "Completion summary + archive move" and extended to mention the v0.10.0 terminal move and its skip conditions.
+- **AGENTS.md "Hard rules for agents working on this codebase"** default-paths bullet expanded to mention `docs/implementation/IMPLEMENTED` as the archive location, name `stride-lite-workflow` SKILL.md as the new co-author of the cross-skill contract (any change to `--output-dir` must also touch the workflow's `/PENDING/` substring substitution), and call out the silent-breakage failure mode if the two paths drift.
+
+### Notes
+
+- **No new files.** The change is contained in `skills/stride-lite-workflow/SKILL.md` (Step 8 sub-step + Bash scope), `README.md`, `AGENTS.md`, `CHANGELOG.md`, and `.claude-plugin/plugin.json` (version bump). The `hooks/` enforcement layer (added in v0.9.0), the `.stride_lite.md` template, the three subagents (`create-decomposer`, `task-explorer`, `task-reviewer`), and the four `lib/` helpers are all unchanged.
+- **`lib/resolve_output_path.md` is referenced but not modified.** The terminal-move step's collision loop mirrors its bash idiom (`n=2`, `[ ! -e "$candidate" ]` probe, 1000-iteration cap) inline rather than calling the helper as a subprocess — the helper is spec-only documentation, not a runtime file.
+- **Smoke test unchanged.** `test/smoke.sh` does not assert on the workflow SKILL.md, README, AGENTS.md, CHANGELOG, plugin.json, or the goal/task lifecycle, so v0.10.0 ships without modifying the test — it continues to exit 0 with `24 passed, 0 failed`. Integration testing of the move step (the 7 scenarios listed in W917's testing strategy: happy path, collision suffix, git-tracked vs non-tracked, non-`/PENDING/` skip, cap exhaustion, after-goal-failure no-move guard, filesystem-mv failure) is verified by transcribing the SKILL.md reference snippet into a scratch script and exercising each scenario manually.
+- **v0.4.0 per-task template byte-parity preserved.** This release does not modify either `stride-lite-create-goal/SKILL.md` or `stride-lite-create-task/SKILL.md`; the parity diff still returns empty.
+- **No changes to existing agents.** `agents/create-decomposer.md`, `agents/task-explorer.md`, and `agents/task-reviewer.md` are byte-equivalent to their v0.9.0 state. The terminal move is a workflow-skill-body concern, not an agent concern.
+- **No changes to the `hooks/` enforcement layer.** `hooks/hooks.json`, `hooks/stride-lite-hook.sh`, and `hooks/stride-lite-hook.ps1` are byte-equivalent to their v0.9.0 state. The harness still intercepts the same three triggers; the v0.10.0 move step runs in the workflow skill body AFTER the harness's `after_goal` PostToolUse hook has fired and emitted its structured JSON, which the workflow inspects to decide whether to move or skip.
+- **PostToolUse advisory-failure semantics revisited.** The v0.9.0 release intentionally made `after_goal` advisory because PostToolUse cannot roll back the `goal.md` write. v0.10.0 honors that posture: the terminal move is similarly advisory — a failed move logs and exits cleanly rather than failing the workflow.
+
+[0.10.0]: https://github.com/cheezy/stride-lite/releases/tag/v0.10.0
+
 ## [0.9.0] — 2026-05-27
 
 ### Added
