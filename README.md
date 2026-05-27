@@ -82,7 +82,7 @@ The single-task file lives at `<output-dir>/tasks/<slug>.md` — a sibling of an
 
 ### `/stride-lite:init`
 
-Scaffold a project-local `.stride_lite.md` config file in the current working directory with four canonical sections: an email field, plus `before_task`, `after_task`, and `after_goal` hook sections. The hook sections are **executed by the `stride-lite-workflow` skill (v0.8.0+)** at the corresponding lifecycle points: `before_task` at the start of each task iteration, `after_task` after each implementation phase, `after_goal` after the final task in a goal directory wraps up. The shape matches the full Stride plugin's `.stride.md` so your snippets transfer across plugins.
+Scaffold a project-local `.stride_lite.md` config file in the current working directory with four canonical sections: an email field, plus `before_task`, `after_task`, and `after_goal` hook sections. As of **v0.9.0** the hook sections are **auto-fired by Claude Code's PreToolUse/PostToolUse harness** via `hooks/hooks.json`: `before_task` runs immediately before the `stride-lite:task-explorer` Agent dispatch, `after_task` runs immediately before the `stride-lite:task-reviewer` Agent dispatch, and `after_goal` runs immediately after the goal.md `Edit`/`Write` that appends `## Completion Summary`. The shape matches the full Stride plugin's `.stride.md` so your snippets transfer across plugins.
 
 ```bash
 /stride-lite:init
@@ -149,7 +149,19 @@ After it runs, the input file gains a new `## Review Report` section at the bott
 
 ## Workflow
 
-Added in **v0.8.0**, the `stride-lite-workflow` skill is the file-based equivalent of the full Stride plugin's `stride-workflow` orchestrator. It walks a goal directory through the eight-step task lifecycle, executing the hooks from `.stride_lite.md` and dispatching the two existing subagents at the right moments.
+Added in **v0.8.0** and hardened with harness-enforced hook execution in **v0.9.0**, the `stride-lite-workflow` skill is the file-based equivalent of the full Stride plugin's `stride-workflow` orchestrator. It walks a goal directory through the eight-step task lifecycle, dispatching the two existing subagents at the right moments while Claude Code's PreToolUse/PostToolUse harness auto-fires the three `.stride_lite.md` hooks at the corresponding intercept points.
+
+### Cross-platform hook enforcement (v0.9.0+)
+
+`hooks/hooks.json` registers two handlers with Claude Code: a **PreToolUse** matcher on `Agent` dispatches and **PostToolUse** matchers on `Edit` and `Write`. Both routes call `hooks/stride-lite-hook.sh`, which dispatches by trigger condition:
+
+| Trigger | Phase | Matcher | Detection | Section run | Blocking? |
+|---|---|---|---|---|---|
+| Step 3 task-explorer dispatch | PreToolUse | `Agent` | `tool_input.subagent_type == "stride-lite:task-explorer"` | `## before_task` | yes (exit 2 blocks the dispatch) |
+| Step 6 task-reviewer dispatch | PreToolUse | `Agent` | `tool_input.subagent_type == "stride-lite:task-reviewer"` | `## after_task` | yes (exit 2 blocks the dispatch) |
+| Step 8 final-task goal.md write | PostToolUse | `Edit` or `Write` | file path ends in `goal.md` AND body contains `## Completion Summary` | `## after_goal` | no (advisory — PostToolUse cannot roll back the write) |
+
+On native Windows (no `OSTYPE`, `COMSPEC` set), `stride-lite-hook.sh` delegates to the behavior-equivalent `stride-lite-hook.ps1` (PowerShell 5.1+). Both scripts read `.stride_lite.md`, parse the first fenced ` ```bash ... ``` ` block under the named section, and execute each line one at a time — silently no-oping on missing file / missing section / empty block.
 
 Invoke it via Claude Code's Skill tool with the goal-directory path as input:
 
@@ -199,7 +211,7 @@ docs/
 
 - **No Stride API calls.** Stride Lite writes markdown to disk. It does not POST, claim, complete, or interact with any kanban server.
 - **No `.stride_auth.md` or `.stride.md` required.** Those files are for the full Stride plugin. Stride Lite needs neither.
-- **No server-mediated lifecycle.** The full Stride plugin runs `.stride.md` hooks against a kanban server lifecycle (claim → doing → review → done). Stride Lite has no server interaction — but as of v0.8.0 the `stride-lite-workflow` skill DOES execute the three hooks (`before_task`, `after_task`, `after_goal`) from `.stride_lite.md` at the corresponding points in its file-based loop.
+- **No server-mediated lifecycle.** The full Stride plugin runs `.stride.md` hooks against a kanban server lifecycle (claim → doing → review → done). Stride Lite has no server interaction — but as of v0.9.0 the `hooks/` enforcement layer auto-fires the three `.stride_lite.md` hooks (`before_task`, `after_task`, `after_goal`) directly from Claude Code's PreToolUse/PostToolUse harness at the corresponding intercept points in the workflow skill's file-based loop.
 - **No marketplace, no Codex/Cursor/Continue support in v0.1.0.** Claude Code only, manual install only. Multi-harness support and a marketplace listing are slated for later releases.
 
 ## License

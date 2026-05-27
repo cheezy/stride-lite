@@ -2,6 +2,38 @@
 
 All notable changes to **Stride Lite** are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] — 2026-05-27
+
+### Added
+
+- **`hooks/hooks.json`** — Claude Code PreToolUse/PostToolUse handler registration. Registers a single command (`${CLAUDE_PLUGIN_ROOT}/hooks/stride-lite-hook.sh`) under a `PreToolUse` matcher on `Agent` and `PostToolUse` matchers on `Edit` and `Write`. The shell script handles cross-platform delegation internally (mirror of `stride/hooks/hooks.json`'s wrapper-script pattern — no per-entry OS conditionals, no duplicate platform-tagged entries).
+- **`hooks/stride-lite-hook.sh`** — POSIX bash executor for macOS/Linux (and Git Bash / WSL on Windows). Reads the Claude Code hook JSON from stdin, accepts `pre` or `post` as the phase argument, parses `tool_name` / `tool_input.subagent_type` / `tool_input.file_path` via pure bash (no jq dependency), and dispatches to one of three `.stride_lite.md` sections:
+  - PreToolUse + `tool_name == Agent` + `subagent_type == stride-lite:task-explorer` → `## before_task` (blocking, returns exit 2 on failure)
+  - PreToolUse + `tool_name == Agent` + `subagent_type == stride-lite:task-reviewer` → `## after_task` (blocking, returns exit 2 on failure)
+  - PostToolUse + `tool_name in (Edit, Write)` + `file_path` ends in `goal.md` + body contains `## Completion Summary` → `## after_goal` (advisory; returns exit 0 even on failure since PostToolUse cannot roll back the write)
+  Emits single-line structured JSON to stdout (success: `{hook, status, commands_completed, duration_seconds}`; failure: `{hook, status, failed_command, command_index, exit_code, stdout, stderr, commands_completed, commands_remaining}`). Silently no-ops on missing `.stride_lite.md`, missing section, empty fenced block, or non-trigger tool calls.
+- **`hooks/stride-lite-hook.ps1`** — PowerShell 5.1+ executor for native Windows, behavior-equivalent to `stride-lite-hook.sh`. Mirrors the same three trigger conditions, the same JSON output shape (via `ConvertTo-Json -Compress`), and the same exit-code contract (exit 2 on PreToolUse failure / exit 0 on PostToolUse always). Parses JSON via the built-in `ConvertFrom-Json` (no module installs) and shells out to `bash -c` for each user command line so `.stride_lite.md` hook content remains POSIX-portable. `stride-lite-hook.sh` auto-delegates to this script on native Windows (OSTYPE unset + COMSPEC set).
+- **Cross-platform from day one.** Both `.sh` and `.ps1` are authored in the same release. Windows users get a working install without a follow-up patch.
+
+### Changed
+
+- **`stride-lite-workflow` SKILL.md** Steps 2, 5, and the after_goal sub-step of Step 8 amended: the workflow skill body no longer reads or executes `.stride_lite.md` hook sections directly. The harness auto-fires them at the corresponding `Agent` / `Edit` / `Write` tool calls. The `## Hook execution contract` section is rewritten to document the auto-fire trigger table; the `## Bash scope` ✅ list drops the "hook execution" bullet. The eight-step structure (`### Step 1` through `### Step 8`) is preserved verbatim.
+- **README.md** Workflow section extended with a "Cross-platform hook enforcement" subsection documenting the trigger table and the Windows-delegation path. The `/stride-lite:init` blurb updated to reflect harness-enforced auto-fire (no longer "executed by the workflow skill").
+- **AGENTS.md** repository layout block adds a `hooks/` entry with all three files. The project-overview paragraph updated to mention the v0.9.0 enforcement layer. The previously documented "red flag — stride-lite hooks live in .stride_lite.md ... not as a separate orchestration tier" hard rule under "What NOT to add" is rewritten to describe the new harness-enforced model.
+
+### Notes
+
+- **Behavior parity between `.sh` and `.ps1`** is the v0.9.0 invariant. Both scripts must detect the same three trigger conditions, emit byte-equivalent JSON for the same input + `.stride_lite.md` content, and apply the same exit-code contract. Divergence is the failure mode the cross-platform contract is built to prevent.
+- **No JSON parser dependency on `.sh`** — pure bash grep/sed/parameter-expansion JSON parsing. `.ps1` uses the built-in `ConvertFrom-Json` / `ConvertTo-Json` (no module installs).
+- **`.stride_lite.md` template shape unchanged.** The init skill's canonical template still emits the four sections (`## email`, `## before_task`, `## after_task`, `## after_goal`) in the same order with the same empty fenced bash blocks. Existing `.stride_lite.md` files continue to work without modification — the only change is that the hooks now auto-fire.
+- **No changes to existing agents.** `agents/create-decomposer.md`, `agents/task-explorer.md`, and `agents/task-reviewer.md` are byte-equivalent to their v0.8.0 state. The harness intercepts the Agent dispatch from outside the agent — it does not modify the agent contracts.
+- **v0.4.0 per-task template byte-parity preserved.** This release does not modify either `stride-lite-create-goal/SKILL.md` or `stride-lite-create-task/SKILL.md`; the parity diff still returns empty.
+- **Smoke test unchanged.** `test/smoke.sh` does not assert on hooks, skills, agents, or the plugin manifest, so v0.9.0 ships without modifying the test — it continues to exit 0 with `24 passed, 0 failed`. Cross-platform behavioral parity between `.sh` and `.ps1` is verified manually via the integration-test list in the W916 testing strategy; a dedicated test suite (`test-stride-lite-hook.sh` + `test-stride-lite-hook.ps1`) is out of scope for this release and can follow in a later patch.
+- **`hooks/` is not on the canonical-pattern red-flag list anymore.** The "What NOT to add" block in AGENTS.md previously called it out as a red flag; the v0.9.0 enforcement layer is the principled exception that explicitly addresses why the layer is wanted (harness-enforced enforcement that survives skill amendments).
+- **PostToolUse advisory semantics for `after_goal`.** A failing `## after_goal` hook emits the structured failure JSON but does NOT block — the `goal.md` write has already happened and cannot be rolled back. The user can inspect the failure JSON and re-run the hook manually if desired.
+
+[0.9.0]: https://github.com/cheezy/stride-lite/releases/tag/v0.9.0
+
 ## [0.8.0] — 2026-05-27
 
 ### Added

@@ -45,16 +45,11 @@ If every `taskN.md` in the goal directory already has a `## Completion Summary` 
 
 ### Step 2 — Execute the `## before_task` hook
 
-Read `.stride_lite.md` from the project root (the file `/stride-lite:init` scaffolds). Locate the `## before_task` section. Parse the fenced bash block inside it — one command per line.
+The `hooks/hooks.json` registered with Claude Code auto-fires the `## before_task` section from `.stride_lite.md` as a **PreToolUse** hook on the Step 3 `Agent` dispatch of `stride-lite:task-explorer`. The harness runs the hook before the agent dispatch completes; a non-zero exit returns `exit 2` and blocks the dispatch, which surfaces to you as a Step 3 failure.
 
-Execute each command line via Bash, one at a time, capturing `exit_code`, `stdout`, `stderr`, and `duration_ms` for each. Stop on the first non-zero exit:
+You do **NOT** read `.stride_lite.md` or execute its hook sections directly in this step — the harness does that. Missing `.stride_lite.md`, a missing `## before_task` section, or an empty fenced block all degrade to a clean no-op (exit 0) so the dispatch proceeds. A failing command emits a structured failure JSON on stdout for your Step 8 Completion Summary to reference.
 
-- If `## before_task` section is **missing** from `.stride_lite.md` → treat as a no-op (exit_code 0, empty output) and proceed.
-- If the section exists but the fenced block is **empty** → no-op and proceed.
-- If `.stride_lite.md` itself is **missing** → log a clear warning ("no .stride_lite.md found in project root; skipping hook execution") and proceed.
-- If any command **exits non-zero** → this is a blocking failure. Surface the failing command and its stderr to the user and stop the workflow. Do NOT proceed to Step 3.
-
-**Capture the aggregated hook result** (exit_code = max of all line exit_codes, output = concatenated stdout/stderr, duration_ms = wall-clock total). The Step 8 Completion Summary references this result.
+If Step 3's dispatch is blocked by a `before_task` failure, surface the failing command and its stderr to the user and stop the workflow.
 
 ### Step 3 — Dispatch `stride-lite:task-explorer`
 
@@ -72,9 +67,9 @@ Follow the acceptance criteria as your definition of done. Replicate the pattern
 
 ### Step 5 — Execute the `## after_task` hook
 
-Same pattern as Step 2, but read the `## after_task` section from `.stride_lite.md`. Same blocking semantics: any non-zero exit stops the workflow.
+Same auto-fire pattern as Step 2, but the harness runs the `## after_task` section as a **PreToolUse** hook on the Step 6 `Agent` dispatch of `stride-lite:task-reviewer`. Same blocking semantics — a non-zero exit blocks the reviewer dispatch, which surfaces to you as a Step 6 failure.
 
-Capture the aggregated hook result for the Completion Summary in Step 8.
+You do **NOT** execute `.stride_lite.md` hook sections directly in this step. The harness handles it; a failing command emits structured failure JSON for your Step 8 Completion Summary.
 
 ### Step 6 — Dispatch `stride-lite:task-reviewer`
 
@@ -106,34 +101,36 @@ Append a `## Completion Summary` section to the active task file at EOF. The sec
 - If `task(K+1).md` **exists** → return to Step 1 to process the next task in the loop.
 - If `task(K+1).md` **does NOT exist** → this was the final task in the goal. Continue with the goal-level wrap-up:
   1. Append a `## Completion Summary` section to `goal.md` (the goal-level summary). Content: one-paragraph synthesis of the work across all child tasks, bullet list of completed tasks with one-line each, total elapsed time if trackable.
-  2. Execute the `## after_goal` hook from `.stride_lite.md` (same pattern as Step 2). A failure here stops the workflow but does NOT roll back the Completion Summary — the user can re-run the after_goal hook manually.
+  2. The append to `goal.md` is performed via `Edit` or `Write`; the harness auto-fires the `## after_goal` section from `.stride_lite.md` as a **PostToolUse** hook when (a) the file path ends in `goal.md` and (b) the written content contains the literal string `## Completion Summary`. PostToolUse cannot roll back the write, so `after_goal` is **advisory** — a failure emits structured failure JSON on stdout for the user to inspect but does not stop or roll back. You do NOT execute `.stride_lite.md` hook sections directly in this step.
   3. Workflow complete. Stop.
 
 ## Hook execution contract
 
-The three hooks (`## before_task`, `## after_task`, `## after_goal`) all use the same execution pattern, captured here once:
+As of v0.9.0 the three hooks (`## before_task`, `## after_task`, `## after_goal`) are **auto-fired by Claude Code via `hooks/hooks.json`** — the workflow skill body does NOT execute `.stride_lite.md` hook sections directly. The harness invokes `hooks/stride-lite-hook.sh` on macOS/Linux (which delegates to `hooks/stride-lite-hook.ps1` on native Windows) at three intercept points:
 
-1. Read `.stride_lite.md` from the project root (use `git rev-parse --show-toplevel` to locate it; fall back to the current working directory if not inside a git repo).
-2. Find the relevant `## <hook_name>` section. If absent, treat as no-op (exit_code 0, empty output) and proceed.
-3. Parse the fenced bash block (` ```bash ... ``` `) inside that section. If the block is empty or missing, treat as no-op.
-4. Execute each command line via Bash, one at a time:
-   - Capture stdout, stderr, exit_code per line.
-   - Aggregate: result_exit_code = max of all line exit_codes; result_output = concatenated stdout (then stderr, prefixed `--- stderr ---`); result_duration_ms = wall-clock total.
-5. If `result_exit_code != 0` (blocking failure):
-   - Surface the failing command, its line number in `.stride_lite.md`, and its stderr to the user.
-   - Stop the workflow. Do NOT proceed to the next step.
-6. Otherwise (success), record the aggregated result. The Completion Summary in Step 8 references it.
+| Section | Phase | Matcher | Trigger condition | Blocking? |
+|---|---|---|---|---|
+| `## before_task` | PreToolUse | `Agent` | `tool_input.subagent_type == "stride-lite:task-explorer"` (Step 3 dispatch) | yes (exit 2 blocks the dispatch) |
+| `## after_task` | PreToolUse | `Agent` | `tool_input.subagent_type == "stride-lite:task-reviewer"` (Step 6 dispatch) | yes (exit 2 blocks the dispatch) |
+| `## after_goal` | PostToolUse | `Edit` or `Write` | file path ends in `goal.md` AND body contains `## Completion Summary` (Step 8 final-task wrap-up) | no (advisory; failure cannot roll back the write) |
 
-The hook environment is the same Bash shell environment the workflow itself runs in — no special env-var injection beyond what the user's command lines reference. (This differs from the full Stride plugin which injects `TASK_*` / `GOAL_*` env vars; stride-lite hooks rely on the user writing self-contained commands.)
+For each trigger, the hook executor:
+
+1. Locates `.stride_lite.md` via `$CLAUDE_PROJECT_DIR` (falls back to the current directory).
+2. Parses the named `## <section>` heading and the first fenced ` ```bash ... ``` ` block under it.
+3. Executes each non-empty, non-comment line one at a time. On the first non-zero exit it stops and emits a structured failure JSON on stdout (`hook`, `status: "failed"`, `failed_command`, `command_index`, `exit_code`, `stdout`, `stderr`, `commands_completed`, `commands_remaining`); on all-success it emits a structured success JSON (`hook`, `status: "success"`, `commands_completed`, `duration_seconds`).
+4. Missing `.stride_lite.md`, missing section, or empty fenced block all degrade to a clean no-op (exit 0, no JSON).
+
+The hook environment is the same Bash shell environment Claude Code itself runs in — no special env-var injection beyond what the user's command lines reference. (This differs from the full Stride plugin which injects `TASK_*` / `GOAL_*` env vars; stride-lite hooks rely on the user writing self-contained commands.)
 
 ## Bash scope
 
 The workflow skill's Bash usage is scoped to a specific set of operations. Explicit ✅ examples:
 
-- ✅ Hook execution from `.stride_lite.md` (`## before_task` / `## after_task` / `## after_goal` fenced bash blocks) — the user supplies these commands; execute them verbatim.
+- ✅ `.stride_lite.md` hook execution is performed by the harness via `hooks/stride-lite-hook.sh` (or `.ps1` on native Windows) — this skill body does NOT run `## before_task` / `## after_task` / `## after_goal` directly.
 - ✅ `git diff HEAD` — captured by the task-reviewer agent in Step 6 (not directly by this skill; the agent has its own Bash grant).
 - ✅ `ls`, `test -f`, `find` — for filesystem navigation inside the goal directory (listing taskN.md files, checking for task(K+1).md existence).
-- ✅ `git rev-parse --show-toplevel` — for locating the project root to find `.stride_lite.md`.
+- ✅ `git rev-parse --show-toplevel` — for locating the project root (e.g., to inspect `.stride_lite.md` for the user, not to execute it).
 
 Explicit ❌ anti-examples — the workflow skill MUST NEVER directly invoke:
 
@@ -142,7 +139,7 @@ Explicit ❌ anti-examples — the workflow skill MUST NEVER directly invoke:
 - ❌ `git commit`, `git push`, `git checkout`, `git reset`, `git merge`, `git rebase` — no mutating git operations.
 - ❌ `rm`, `mv`, `cp` (except inside user-supplied hook bash blocks) — no filesystem mutation outside the documented append-only task/goal file mutations.
 
-If the user wants build/test/lint runs as part of the workflow, they put them in `## after_task` in `.stride_lite.md`. The workflow executes them verbatim — that's how the scope expands by configuration, not by skill-body code.
+If the user wants build/test/lint runs as part of the workflow, they put them in `## after_task` in `.stride_lite.md`. The harness's PreToolUse hook on the Step 6 reviewer dispatch executes them verbatim — that's how the scope expands by configuration, not by skill-body code.
 
 ## Edge cases
 
