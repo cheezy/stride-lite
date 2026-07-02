@@ -24,7 +24,7 @@ If `$ARGUMENTS` is empty (no positional prompt), the skill exits non-zero with a
 
 ### Step 2: Invoke the `stride-lite-create-task` skill
 
-Activate the skill and pass `$ARGUMENTS` through verbatim. The skill walks all seven flow steps documented in `skills/stride-lite-create-task/SKILL.md`:
+Activate the skill and pass `$ARGUMENTS` through verbatim. The skill walks every flow step documented in `skills/stride-lite-create-task/SKILL.md`:
 
 1. `lib/parse_args` — extract prompt + flags
 2. `lib/load_requirements_dir` — read the requirements directory (non-fatal when missing)

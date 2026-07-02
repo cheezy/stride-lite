@@ -6,7 +6,7 @@ Stride Lite is useful when you want the Stride field discipline (acceptance crit
 
 ## Installation
 
-Stride Lite v0.1.0 is Claude Code only and ships as a manual install (no marketplace yet).
+Stride Lite is currently Claude Code only and ships as a manual install (no marketplace yet).
 
 ```bash
 git clone https://github.com/cheezy/stride-lite.git ~/dev/stride-lite
@@ -20,10 +20,11 @@ ln -s ~/dev/stride-lite ~/.claude/plugins/stride-lite
 
 Restart Claude Code (or run `/plugin reload`) so the loader picks up the new commands.
 
-After install, two slash commands are available:
+After install, three slash commands are available:
 
 - `/stride-lite:create-goal <prompt>` — produces a goal directory with one `goal.md` plus one `taskN.md` per child task.
 - `/stride-lite:create-task <prompt>` — produces a single task markdown file.
+- `/stride-lite:init [--force]` — scaffolds a project-local `.stride_lite.md` config file with the hook sections.
 
 ## Commands
 
@@ -215,7 +216,7 @@ The terminal PENDING → IMPLEMENTED move (added in **v0.10.0**) is performed by
 - **No Stride API calls.** Stride Lite writes markdown to disk. It does not POST, claim, complete, or interact with any kanban server.
 - **No `.stride_auth.md` or `.stride.md` required.** Those files are for the full Stride plugin. Stride Lite needs neither.
 - **No server-mediated lifecycle.** The full Stride plugin runs `.stride.md` hooks against a kanban server lifecycle (claim → doing → review → done). Stride Lite has no server interaction — but as of v0.9.0 the `hooks/` enforcement layer auto-fires the three `.stride_lite.md` hooks (`before_task`, `after_task`, `after_goal`) directly from Claude Code's PreToolUse/PostToolUse harness at the corresponding intercept points in the workflow skill's file-based loop.
-- **No marketplace, no Codex/Cursor/Continue support in v0.1.0.** Claude Code only, manual install only. Multi-harness support and a marketplace listing are slated for later releases.
+- **No marketplace, no Codex/Cursor/Continue support currently.** Claude Code only, manual install only. Multi-harness support and a marketplace listing are slated for later releases.
 
 ## License
 

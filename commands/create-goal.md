@@ -24,15 +24,16 @@ If `$ARGUMENTS` is empty (no positional prompt), the skill exits non-zero with a
 
 ### Step 2: Invoke the `stride-lite-create-goal` skill
 
-Activate the skill and pass `$ARGUMENTS` through verbatim. The skill walks all seven flow steps documented in `skills/stride-lite-create-goal/SKILL.md`:
+Activate the skill and pass `$ARGUMENTS` through verbatim. The skill walks every flow step documented in `skills/stride-lite-create-goal/SKILL.md`:
 
 1. `lib/parse_args` — extract prompt + flags
 2. `lib/load_requirements_dir` — read the requirements directory (non-fatal when missing)
 3. Dispatch `create-decomposer` in `mode=goal`
 4. `lib/slugify` — normalize the goal title
 5. `lib/resolve_output_path` with `kind=dir` — produce a unique `<output-dir>/<slug>/`
-6. Render `goal.md` plus one `taskN.md` per child task
-7. Print the final directory path
+6. Render and write the `goal.md`
+7. Render and write one `taskN.md` per child task
+8. Print the final directory path
 
 ### Step 3: Surface the result
 
