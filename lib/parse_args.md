@@ -48,8 +48,8 @@ The defaults MUST be the literal strings `docs/requirements` and `docs/implement
 
 Why these specific defaults are non-negotiable:
 
-- `docs/requirements` is where `/stride-ideation:ideate` and `/stride-lite:ideate` consume requirements docs. Changing it breaks the implicit contract between the two skill families.
-- `docs/implementation/PENDING` is where `/stride-lite:decompose` lands its goal directories. The path includes `implementation/` to distinguish goal artifacts from raw requirements; downstream tooling (post-processing scripts, CI, archival) keys on this directory shape.
+- `docs/requirements` is where `/stride-ideation:ideate` writes and the `/stride-lite:create-goal` / `/stride-lite:create-task` commands consume requirements docs. Changing it breaks the implicit contract between the two skill families.
+- `docs/implementation/PENDING` is where `/stride-lite:create-goal` lands its goal directories (and `/stride-lite:create-task` its single-task files). The path includes `implementation/` to distinguish goal artifacts from raw requirements; downstream tooling (post-processing scripts, CI, archival) keys on this directory shape.
 
 ## Pitfalls
 
