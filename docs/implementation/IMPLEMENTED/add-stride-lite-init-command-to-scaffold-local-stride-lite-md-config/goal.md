@@ -41,3 +41,7 @@ Four-task split along plugin-architecture seams: (1) the surface skill that owns
 2. [Write /stride-lite:init slash-command shell](task2.md)
 3. [Update README, AGENTS, CHANGELOG and bump plugin version to 0.2.0](task3.md)
 4. [Extend smoke test with /stride-lite:init flow assertions](task4.md)
+
+## Completion Summary
+
+Shipped at v0.2.0 — `/stride-lite:init` landed as the third surface command with the canonical four-section `.stride_lite.md` template, the `--force` clobber guard, the fill-in-the-fields success message, the documentation/version bump, and the smoke-test init-flow assertions, all as scoped above. Archived retroactively per the v0.10.0 PENDING→IMPLEMENTED convention. Two era notes for readers of this record: (1) of the four decomposed child tasks, only [task1.md](task1.md) was ever committed to this directory — task2 through task4 files were never created here, though the work they describe landed in the v0.2.0 release regardless; their absence is a gap in this artifact's paper trail, not in the shipped feature. (2) The hook-semantics statements in the body above ("static config in v0.2.0 — stride-lite does NOT execute them") accurately describe v0.2.0-era behavior and are preserved unedited as history; they were superseded at v0.9.0, when the Claude Code harness began auto-firing the three hook sections via the plugin's `hooks.json` (`before_task`/`after_task` blocking, `after_goal` advisory).
