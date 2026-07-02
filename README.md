@@ -12,11 +12,13 @@ Stride Lite is currently Claude Code only and ships as a manual install (no mark
 git clone https://github.com/cheezy/stride-lite.git ~/dev/stride-lite
 ```
 
-Then symlink the plugin into your Claude Code plugin directory (or copy if you prefer):
+Then symlink the plugin into your Claude Code plugin directory (or run `./install.sh` from the checkout to copy it there instead):
 
 ```bash
 ln -s ~/dev/stride-lite ~/.claude/plugins/stride-lite
 ```
+
+Both methods ship the `hooks/` enforcement layer (`hooks.json` plus the cross-platform `stride-lite-hook.sh`/`.ps1` scripts). Note that these hook scripts execute shell commands you author yourself in your project's `.stride_lite.md` — see [Cross-platform hook enforcement](#cross-platform-hook-enforcement-v090) for details.
 
 Restart Claude Code (or run `/plugin reload`) so the loader picks up the new commands.
 

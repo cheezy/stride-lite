@@ -76,10 +76,17 @@ cp -a "$SRC_DIR/commands" "$TARGET_DIR/"
 cp -a "$SRC_DIR/skills" "$TARGET_DIR/"
 cp -a "$SRC_DIR/agents" "$TARGET_DIR/"
 cp -a "$SRC_DIR/lib" "$TARGET_DIR/"
+cp -a "$SRC_DIR/hooks" "$TARGET_DIR/"
 cp -a "$SRC_DIR/README.md" "$TARGET_DIR/"
 cp -a "$SRC_DIR/AGENTS.md" "$TARGET_DIR/"
 cp -a "$SRC_DIR/LICENSE" "$TARGET_DIR/"
 cp -a "$SRC_DIR/CHANGELOG.md" "$TARGET_DIR/"
+
+# Post-copy sanity check: the hook enforcement layer must have landed.
+if [ ! -f "$TARGET_DIR/hooks/hooks.json" ]; then
+  echo "install.sh: hooks/hooks.json missing from $TARGET_DIR after copy — install is incomplete (is $SRC_DIR/hooks/ intact?)" >&2
+  exit 1
+fi
 
 echo ""
 echo "Stride Lite installed successfully."
@@ -89,6 +96,7 @@ echo "  Commands: $(ls "$TARGET_DIR/commands"/*.md 2>/dev/null | wc -l | tr -d '
 echo "  Skills:   $(ls -d "$TARGET_DIR/skills"/*/ 2>/dev/null | wc -l | tr -d ' ') skill directories"
 echo "  Agents:   $(ls "$TARGET_DIR/agents"/*.md 2>/dev/null | wc -l | tr -d ' ') subagents"
 echo "  Lib:      $(ls "$TARGET_DIR/lib"/*.md 2>/dev/null | wc -l | tr -d ' ') helper specs"
+echo "  Hooks:    $(ls "$TARGET_DIR/hooks"/stride-lite-hook.* 2>/dev/null | wc -l | tr -d ' ') hook scripts"
 echo ""
 echo "Next steps:"
 echo "  1. Restart Claude Code (or run /plugin reload) so the new commands are picked up."
