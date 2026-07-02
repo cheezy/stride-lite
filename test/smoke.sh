@@ -354,7 +354,10 @@ fi
 # This helper writes the canonical .stride_lite.md template documented in
 # stride-lite/skills/stride-lite-init/SKILL.md to a caller-supplied target
 # path. It must stay byte-equivalent to the template in the SKILL.md — if
-# the SKILL.md changes, update this function in the same commit.
+# the SKILL.md changes, update this function in the same commit. That
+# byte-equivalence is machine-enforced: the init-flow stage below extracts
+# the canonical block from the SKILL.md and diffs it against this function's
+# output, so drift fails the run instead of rotting silently.
 write_stride_lite_template() {
   local target="${1:-}"
   if [ -z "$target" ]; then
@@ -367,7 +370,7 @@ write_stride_lite_template() {
 
 This file is created by `/stride-lite:init`. Fill in the fields below.
 
-**Note (v0.2.0):** The hook sections are static configuration — stride-lite does not execute them. The format mirrors the full Stride plugin's `.stride.md` so your snippets can transfer between plugins later.
+**Note (v0.9.0+):** The hook sections are executed automatically by the Claude Code harness via the plugin's `hooks.json` at the corresponding lifecycle points (`before_task` before each task-explorer dispatch and `after_task` before each task-reviewer dispatch, both blocking — exit 2 stops the dispatch; `after_goal` after the goal-level Completion Summary is written, advisory). The format mirrors the full Stride plugin's `.stride.md` so your snippets transfer across plugins.
 
 ## email
 
@@ -406,6 +409,21 @@ else
   nope "writes .stride_lite.md to the target path" "file exists" "missing"
 fi
 
+# Assertion 1b: byte-parity with the canonical template in the init SKILL.md.
+# The canonical block is delimited by the file's only quadruple-backtick fence
+# pair (```` ````markdown ```` ... ```` ```` ````); extract it exclusive of the
+# fences and diff against the rendered output above.
+CANONICAL_TEMPLATE="$INIT_DIR/canonical-template.md"
+awk 'in_block && /^````$/ {exit} in_block {print} /^````markdown$/ {in_block=1}' \
+  "$REPO_ROOT/skills/stride-lite-init/SKILL.md" > "$CANONICAL_TEMPLATE"
+if TEMPLATE_DIFF="$(diff -u "$CANONICAL_TEMPLATE" "$INIT_TARGET" 2>&1)"; then
+  ok "embedded template is byte-identical to init SKILL.md canonical block"
+else
+  nope "embedded template is byte-identical to init SKILL.md canonical block" \
+    "empty diff against SKILL.md canonical block" \
+    "$TEMPLATE_DIFF"
+fi
+
 # Assertion 2: the email section is present.
 if grep -qE '^## email$' "$INIT_TARGET"; then
   ok "template contains ## email section"
@@ -435,6 +453,147 @@ else
   nope "collision check would refuse second write without --force" \
     "[ -e ] returns true on the existing file" "file not present"
 fi
+
+# ------------------------------------------------------------------
+# hook routing (stride-lite-hook.sh)
+# ------------------------------------------------------------------
+#
+# Feeds synthetic hook JSON payloads through hooks/stride-lite-hook.sh as a
+# full subprocess (the same way the Claude Code harness invokes it via
+# hooks.json) and asserts the routing + exit-code contract: before_task and
+# after_task are blocking PreToolUse intercepts on the two Agent dispatches
+# (a failing section exits 2), after_goal is an advisory PostToolUse
+# intercept on the goal.md Completion Summary write (a failing section still
+# exits 0), and non-matching payloads pass through with empty stdout. All
+# fixture commands are inert (true/false) and confined to the sandbox via a
+# per-invocation CLAUDE_PROJECT_DIR prefix — the hook resolves its config
+# and runs sections there, never in the repo.
+
+echo ""
+echo "hook routing (stride-lite-hook.sh)"
+
+HOOK_SH="$REPO_ROOT/hooks/stride-lite-hook.sh"
+HOOK_OUT=""
+HOOK_RC=0
+
+# run_hook <phase> <project-dir> <payload-json> — sets HOOK_OUT / HOOK_RC.
+# printf '%s' only: the payloads carry literal \n escapes that echo would
+# mangle. Stderr is dropped — the JSON contract lives on stdout.
+run_hook() {
+  local phase="$1" dir="$2" payload="$3"
+  HOOK_OUT="$(printf '%s' "$payload" | CLAUDE_PROJECT_DIR="$dir" bash "$HOOK_SH" "$phase" 2>/dev/null)"
+  HOOK_RC=$?
+}
+
+# assert_hook_out <label> <marker> — HOOK_OUT must contain the marker.
+assert_hook_out() {
+  local label="$1" marker="$2"
+  case "$HOOK_OUT" in
+    *"$marker"*) ok "$label" ;;
+    *) nope "$label" "$marker in stdout" "$HOOK_OUT" ;;
+  esac
+}
+
+# Two fixture configs: every section succeeds vs. blocking/advisory sections fail.
+HOOK_PASS_DIR="$SANDBOX/hook-pass"
+mkdir -p "$HOOK_PASS_DIR"
+cat > "$HOOK_PASS_DIR/.stride_lite.md" <<'CONFIG'
+## email
+
+hook-fixture@example.com
+
+## before_task
+
+```bash
+true
+```
+
+## after_task
+
+```bash
+true
+```
+
+## after_goal
+
+```bash
+true
+```
+CONFIG
+
+HOOK_FAIL_DIR="$SANDBOX/hook-fail"
+mkdir -p "$HOOK_FAIL_DIR"
+cat > "$HOOK_FAIL_DIR/.stride_lite.md" <<'CONFIG'
+## email
+
+hook-fixture@example.com
+
+## before_task
+
+```bash
+false
+```
+
+## after_task
+
+```bash
+```
+
+## after_goal
+
+```bash
+false
+```
+CONFIG
+
+EXPLORER_PAYLOAD='{"tool_name":"Agent","tool_input":{"subagent_type":"stride-lite:task-explorer","prompt":"Explore the task"}}'
+REVIEWER_PAYLOAD='{"tool_name":"Agent","tool_input":{"subagent_type":"stride-lite:task-reviewer","prompt":"Review the task"}}'
+GOAL_WRITE_PAYLOAD='{"tool_name":"Write","tool_input":{"file_path":"docs/implementation/PENDING/add-notifs/goal.md","content":"# Goal\n\n## Completion Summary\n\nAll tasks done."}}'
+
+# Routing path 1: explorer dispatch fires before_task (blocking, success).
+run_hook pre "$HOOK_PASS_DIR" "$EXPLORER_PAYLOAD"
+assert_eq "explorer dispatch exits 0 when before_task succeeds" "$HOOK_RC" "0"
+assert_hook_out "explorer dispatch emits before_task success JSON" '"hook":"before_task","status":"success"'
+
+# Routing path 2: reviewer dispatch fires after_task (blocking, success).
+run_hook pre "$HOOK_PASS_DIR" "$REVIEWER_PAYLOAD"
+assert_eq "reviewer dispatch exits 0 when after_task succeeds" "$HOOK_RC" "0"
+assert_hook_out "reviewer dispatch emits after_task success JSON" '"hook":"after_task","status":"success"'
+
+# Routing path 3: goal.md write with Completion Summary fires after_goal.
+run_hook post "$HOOK_PASS_DIR" "$GOAL_WRITE_PAYLOAD"
+assert_eq "completion-summary write exits 0 when after_goal succeeds" "$HOOK_RC" "0"
+assert_hook_out "completion-summary write emits after_goal success JSON" '"hook":"after_goal","status":"success"'
+
+# Routing path 4: non-matching Agent dispatch passes through untouched.
+run_hook pre "$HOOK_PASS_DIR" '{"tool_name":"Agent","tool_input":{"subagent_type":"general-purpose","prompt":"unrelated dispatch"}}'
+assert_eq "non-matching subagent_type exits 0" "$HOOK_RC" "0"
+assert_eq "non-matching subagent_type fires nothing (empty stdout)" "$HOOK_OUT" ""
+
+# Edge case: payload with no subagent_type field at all.
+run_hook pre "$HOOK_PASS_DIR" '{"tool_name":"Agent","tool_input":{"prompt":"no subagent field"}}'
+assert_eq "missing subagent_type exits 0" "$HOOK_RC" "0"
+assert_eq "missing subagent_type fires nothing (empty stdout)" "$HOOK_OUT" ""
+
+# Edge case: goal.md write WITHOUT a Completion Summary must not fire.
+run_hook post "$HOOK_PASS_DIR" '{"tool_name":"Write","tool_input":{"file_path":"docs/implementation/PENDING/add-notifs/goal.md","content":"# Goal\n\nStill in progress."}}'
+assert_eq "goal.md write without Completion Summary exits 0" "$HOOK_RC" "0"
+assert_eq "goal.md write without Completion Summary fires nothing (empty stdout)" "$HOOK_OUT" ""
+
+# Path-filter check: Completion Summary in a non-goal.md file must not fire.
+run_hook post "$HOOK_PASS_DIR" '{"tool_name":"Write","tool_input":{"file_path":"docs/notes.md","content":"## Completion Summary\n\nnot a goal file"}}'
+assert_eq "non-goal.md path exits 0" "$HOOK_RC" "0"
+assert_eq "non-goal.md path fires nothing (empty stdout)" "$HOOK_OUT" ""
+
+# Blocking semantics: a failing before_task section exits 2 and blocks.
+run_hook pre "$HOOK_FAIL_DIR" "$EXPLORER_PAYLOAD"
+assert_eq "failing before_task section exits 2 (blocking)" "$HOOK_RC" "2"
+assert_hook_out "failing before_task emits failure JSON" '"hook":"before_task","status":"failed"'
+
+# Advisory semantics: a failing after_goal section still exits 0.
+run_hook post "$HOOK_FAIL_DIR" "$GOAL_WRITE_PAYLOAD"
+assert_eq "failing after_goal section exits 0 (advisory)" "$HOOK_RC" "0"
+assert_hook_out "failing after_goal emits failure JSON" '"hook":"after_goal","status":"failed"'
 
 # ------------------------------------------------------------------
 # Summary
