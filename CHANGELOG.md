@@ -2,6 +2,12 @@
 
 All notable changes to **Stride Lite** are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed — stale hooks-never-execute claims purged from the init surface (W1477)
+
+The init command and init skill were frozen at v0.2.0 semantics — the first thing a new user runs told them the hook sections are "static configuration that stride-lite does NOT execute," and the sites that did assert execution misattributed it to the `stride-lite-workflow` skill (true at v0.8.0, wrong since the v0.9.0 harness took over). All eight sites — the command frontmatter and NOT-do bullet, the skill frontmatter, intro, NOT-do bullet, the Step 3 success message printed verbatim to users, the canonical `.stride_lite.md` template Note, and the pitfalls entry — now carry one consistent statement: the init surface never executes hooks itself (pure scaffolder); as of v0.9.0 the Claude Code harness auto-fires them via the plugin's `hooks.json`, `before_task`/`after_task` blocking (exit 2 stops the dispatch) and `after_goal` advisory, with the trigger points matching the workflow skill's table. The scaffolded template structure and `test/smoke.sh` are untouched (the smoke test's embedded template copy is synced in a dependent task).
+
 ## [0.10.0] — 2026-05-27
 
 ### Added

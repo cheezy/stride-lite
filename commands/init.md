@@ -1,5 +1,5 @@
 ---
-description: Scaffold a project-local `.stride_lite.md` config file in the current working directory with the canonical four sections (`## email`, `## before_task`, `## after_task`, `## after_goal`). The hook sections are static configuration in v0.2.0 — stride-lite does NOT execute them. Refuses to clobber an existing `.stride_lite.md` unless `--force` is supplied. Never POSTs to any API.
+description: Scaffold a project-local `.stride_lite.md` config file in the current working directory with the canonical four sections (`## email`, `## before_task`, `## after_task`, `## after_goal`). The init command never executes the hook sections (it is purely a scaffolder); as of v0.9.0 they are executed automatically by the Claude Code harness via the plugin's `hooks.json` — `before_task` and `after_task` blocking (exit 2 stops the dispatch), `after_goal` advisory. Refuses to clobber an existing `.stride_lite.md` unless `--force` is supplied. Never POSTs to any API.
 allowed-tools: Bash(test:*), Bash(rm:*), Bash(mkdir:*), Bash(. *:*), Bash(bash:*), Read, Write, Skill
 argument-hint: "[--force]"
 ---
@@ -37,6 +37,6 @@ Pass the skill's stdout to the user verbatim. The skill prints a multi-line succ
 
 - **No business logic in this file.** All parsing, collision-checking, template-writing, and message-printing happen in `skills/stride-lite-init/SKILL.md`.
 - **Never POSTs to any API.** stride-lite remains a "no network" plugin.
-- **Never executes the hook sections.** The `before_task`, `after_task`, and `after_goal` sections in the written `.stride_lite.md` are static configuration — stride-lite does not run them in v0.2.0.
+- **Never executes the hook sections itself.** The init command is a pure scaffolder. As of v0.9.0 the `before_task`, `after_task`, and `after_goal` sections in the written `.stride_lite.md` are executed automatically by the Claude Code harness via the plugin's `hooks.json` — `before_task` and `after_task` are blocking (exit 2 stops the dispatch), `after_goal` is advisory.
 - **Never writes outside the current working directory.** The target is always `./.stride_lite.md` relative to the cwd at invocation time.
 - **Never asks the user mid-flow.** The invocation is fire-and-forget — no prompts, no confirmations.
