@@ -238,10 +238,10 @@ A two-task goal at `docs/implementation/PENDING/add-notifications/` containing `
 **Iteration 1 — task1.md (Emit PubSub broadcast on comment insert).**
 
 - **Step 1.** Scan goal dir. task1.md has no `## Completion Summary` → next task is task1.md.
-- **Step 2.** Read `.stride_lite.md` `## before_task` section. Execute the bash (e.g., `git pull origin main`). Capture exit_code=0, output, duration_ms=2400. Proceed.
+- **Step 2.** Nothing to run by hand — the `## before_task` hook is auto-fired by the Claude Code harness at Step 3's explorer dispatch (PreToolUse intercept, blocking). The harness runs the section's bash (e.g., `git pull origin main`) and emits its structured success JSON; a non-zero exit would surface as exit 2 and block the dispatch.
 - **Step 3.** Dispatch `stride-lite:task-explorer` with `task1.md` as the prompt. After ~30s the agent appends a `## Exploration Report` section to task1.md covering File state per key_file, Pattern matches (Kanban.Boards.create_board broadcast at boards.ex:42), Related tests (test/kanban/comments_test.exs), Implementation notes (use Kanban.PubSub, follow with-chain placement).
 - **Step 4.** Implement the broadcast. Modify `lib/kanban/comments.ex` (add Phoenix.PubSub.broadcast inside the success arm) and `test/kanban/comments_test.exs` (subscriber test).
-- **Step 5.** Read `.stride_lite.md` `## after_task` section. Execute the bash (e.g., `mix test` and `mix credo --strict`). Capture exit_code=0, duration_ms=18000. Proceed.
+- **Step 5.** Again no direct execution — the harness auto-fires the `## after_task` hook at Step 6's reviewer dispatch (PreToolUse intercept, blocking). Its bash (e.g., `mix test` and `mix credo --strict`) runs and succeeds; a failure would block the reviewer dispatch until the root cause is fixed.
 - **Step 6.** Dispatch `stride-lite:task-reviewer` with `task1.md` as the prompt. After ~25s the agent appends a `## Review Report` section. The embedded JSON's `status` is `approved`.
 - **Step 7.** Parse the JSON. `status == approved` → proceed to Step 8.
 - **Step 8.** Append a `## Completion Summary` section to task1.md (one-paragraph synthesis + hook results + review status). Check for task2.md: exists. Return to Step 1.
@@ -252,9 +252,9 @@ A two-task goal at `docs/implementation/PENDING/add-notifications/` containing `
 - **Step 2–7.** Same pattern. The reviewer first returns `changes_requested` (the BoardLive subscribe wasn't filtering by board_id). The workflow loops back to Step 4 (iteration 1 of the review-loop), the implementation is fixed, Step 5/6/7 re-run, the reviewer now returns `approved` (iteration 2 — under the cap). Proceed to Step 8.
 - **Step 8.** Append `## Completion Summary` to task2.md. Check for task3.md: does NOT exist. This was the final task.
 - **Step 8 (continued).** Append `## Completion Summary` to `goal.md` with the goal-level synthesis: "Real-time notifications shipped via 2-task split — broadcast emission in the context module (task1), LiveView subscription in BoardLive.Show (task2). Both tasks reviewed and approved. All hooks completed cleanly."
-- **Step 8 (final).** Execute `.stride_lite.md` `## after_goal` section. If it succeeds, workflow complete. If it fails, surface the failure — goal.md's Completion Summary remains; user re-runs the hook manually.
+- **Step 8 (final).** The harness auto-fires the `## after_goal` hook after the goal.md Completion Summary write (PostToolUse intercept, advisory — it cannot roll back the write that already happened). On success or a clean no-op, archive the goal: move `docs/implementation/PENDING/add-notifications/` to `docs/implementation/IMPLEMENTED/add-notifications/` (git mv when the files are tracked, plain mv otherwise, collision-suffixed per body Step 8). If the harness emitted a structured `"status": "failed"` for after_goal, do NOT move the directory — leave it in PENDING so the user can inspect the failure and re-trigger; goal.md's Completion Summary remains either way. Workflow complete.
 
-**End state.** Both taskN.md files have full lifecycle sections (Description → ... → Exploration Report → Review Report → Completion Summary). goal.md has a `## Completion Summary` at EOF. The user can navigate the goal directory and see exactly what happened, in order, in each file.
+**End state.** Both taskN.md files have full lifecycle sections (Description → ... → Exploration Report → Review Report → Completion Summary). goal.md has a `## Completion Summary` at EOF, and the goal directory now lives at `docs/implementation/IMPLEMENTED/add-notifications/`. The user can navigate the archived goal directory and see exactly what happened, in order, in each file.
 
 ## Red flags — STOP
 
