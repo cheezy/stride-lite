@@ -2,7 +2,9 @@
 
 All notable changes to **Stride Lite** are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.11.0] — 2026-07-02
+
+> **If you installed stride-lite by running `./install.sh` (rather than symlinking the checkout), re-run the installer after updating.** Every copy install made before v0.11.0 is missing the `hooks/` enforcement layer entirely — the documented `.stride_lite.md` hook auto-fire never worked on that install path (W1481 below). A fresh `./install.sh --force` run from this version ships it.
 
 ### Fixed — the stale init-command PENDING artifact archived per the plugin's own convention (W1483)
 
@@ -243,4 +245,5 @@ Initial release. Claude Code only.
 - **Claude Code only.** Codex, Cursor, and Continue support are out of scope for v0.1.0.
 - **Manual install only.** No marketplace listing in v0.1.0; install via `git clone` + `./install.sh` (or a symlink).
 
+[0.11.0]: https://github.com/cheezy/stride-lite/releases/tag/v0.11.0
 [0.1.0]: https://github.com/cheezy/stride-lite/releases/tag/v0.1.0
