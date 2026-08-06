@@ -444,6 +444,11 @@ function Invoke-StrideLiteSection {
         return 0
     }
 
+    # Windows PowerShell 5.1 implements `>` as Out-File, whose default encoding
+    # is UTF-16LE -- so without this the tail read back below is mojibake on the
+    # one platform this file actually runs on. pwsh 7.x ignores it, because its
+    # redirect is a real file handle rather than a cmdlet.
+    $PSDefaultParameterValues['Out-File:Encoding'] = 'utf8'
     Set-Location $ProjectDir
     $completedCmds = @()
     $startTime = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
@@ -459,12 +464,33 @@ function Invoke-StrideLiteSection {
             # stays POSIX-portable (git-bash on Windows ships bash.exe; WSL also
             # provides one). Users who want native PowerShell can wrap their line
             # with `pwsh -c '...'` inside their bash block.
-            $proc = Start-Process -FilePath 'bash' -ArgumentList '-c', $execTrimmed `
-                -RedirectStandardOutput $stdoutFile `
-                -RedirectStandardError $stderrFile `
-                -NoNewWindow -Wait -PassThru
+            #
+            # THE CALL OPERATOR, not Start-Process (D218). `Start-Process
+            # -ArgumentList '-c', $cmd` RE-SPLITS the argument, so bash received
+            # only the first whitespace-delimited token as its script and the
+            # rest as positional parameters a `-c` script ignores. `echo ran >
+            # proof.txt` created no file and the section still reported success —
+            # on native Windows, the only platform this file runs on, every
+            # multi-word hook command silently did nothing.
+            #
+            # `&` passes the variable's contents as ONE argument without
+            # `&` passes the variable's contents as ONE argument without
+            # re-parsing. On pwsh 7.x -- where this was measured -- `1>`/`2>`
+            # redirect the child's real streams straight to files, so a chatty
+            # command cannot deadlock the way ProcessStartInfo does. Windows
+            # PowerShell 5.1 routes `>` through Out-File instead, which
+            # re-encodes the child's bytes; the Out-File default pinned above
+            # keeps the Get-Content readback stable on both.
+            #
+            # ProcessStartInfo.ArgumentList would also solve the splitting, and
+            # was rejected: it does not exist in .NET Framework, and
+            # stride-lite-hook.sh delegates specifically to `powershell.exe`
+            # (Windows PowerShell 5.1), so it would throw on the real target.
+            & bash -c $execTrimmed 1>$stdoutFile 2>$stderrFile
+            # Capture immediately: any later native command overwrites it.
+            $cmdExitCode = $LASTEXITCODE
 
-            if ($proc.ExitCode -eq 0) {
+            if ($cmdExitCode -eq 0) {
                 $completedCmds += $execTrimmed
                 if (Test-Path $stdoutFile) {
                     $stdoutText = Get-Content $stdoutFile -Raw -Encoding UTF8
@@ -475,7 +501,7 @@ function Invoke-StrideLiteSection {
                     if ($stderrText) { [Console]::Error.Write($stderrText) }
                 }
             } else {
-                $cmdExit = $proc.ExitCode
+                $cmdExit = $cmdExitCode
                 $cmdStdout = ''
                 $cmdStderr = ''
                 if (Test-Path $stdoutFile) {

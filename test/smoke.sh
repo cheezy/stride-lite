@@ -2399,9 +2399,16 @@ fi
 assert_eq "the CHANGELOG's top entry matches plugin.json" \
   "$(grep -oE '^## \[[0-9]+\.[0-9]+\.[0-9]+\]' "$RS_CHANGELOG" | head -1 | tr -d '#[] ')" "$RS_VERSION"
 # ...and it is stated nowhere else, so a bump can never half-land.
+# Exclude .git. A commit message legitimately names the version it ships, and
+# .git/COMMIT_EDITMSG holds the most recent one -- so without this the assertion
+# passes until the release is committed and fails immediately afterwards, which
+# is the worst possible time for it to go off.
+RS_VER_FILES="$SANDBOX/version-mentions.txt"
+grep -rlF -- "$RS_VERSION" "$REPO_ROOT" --exclude-dir=.git \
+    --include=*.md --include=*.sh --include=*.json 2>/dev/null \
+  | grep -v '/\.git/' | grep -v 'CHANGELOG\.md$' | grep -v 'plugin\.json$' > "$RS_VER_FILES" || true
 assert_eq "the version is not hard-coded outside plugin.json" \
-  "$(grep -rlF -- "$RS_VERSION" "$REPO_ROOT" --include=*.md --include=*.sh --include=*.json 2>/dev/null \
-     | grep -v CHANGELOG.md | grep -v 'plugin.json' | grep -c . || true)" "0"
+  "$(cat "$RS_VER_FILES" | tr '\n' ' ')" ""
 
 # The CHANGELOG must not carry a hard-coded assertion total. The previous draft
 # did, and both numbers were wrong -- in the very paragraph announcing the
@@ -2479,11 +2486,17 @@ assert_has "the bash suite maps every subject to the file that owns it" "$HS_SH"
     "WHERE EACH SUBJECT LIVES"
 assert_has "the bash suite says why the smoke cases were not moved" "$HS_SH" \
     "would replace a stronger metacharacter case"
-# A known divergence recorded as a skip is honest; one silently asserted as
-# correct is not. Pin that D218 is named rather than papered over.
-assert_has "the bash suite records the D218 divergence rather than hiding it" "$HS_SH" \
-    "D218"
-assert_has "the PowerShell suite records D218 too" "$HS_PS1" "D218"
+# D218 is FIXED: both suites now assert the behaviour rather than recording a
+# divergence, so the check is that the fixed case is asserted -- and that no
+# suite still carries a skip naming it, which would mean the fix regressed or
+# the skip was left behind.
+assert_has "the bash suite asserts the multi-word command parity D218 blocked" "$HS_SH" \
+    "parity: the .ps1 executor runs a multi-word command too"
+assert_eq "no suite still skips for D218" \
+  "$( { grep -hE -A1 '^[[:space:]]*(skip|Write-Skipped)\b' "$HS_SH" "$HS_PS1" 2>/dev/null || true; } \
+      | grep -c 'D218' || true)" "0"
+# D215 is still open, and its skip must stay named rather than quietly dropped.
+assert_has "the PowerShell suite still records the open D215 divergence" "$HS_PS1" "D215"
 # The confinement claim has to be checkable from a path containing a space, and
 # setting TMPDIR does not achieve that: BSD `mktemp -d` with no template ignores
 # it, so a "green under a spaced TMPDIR" run proves nothing on macOS.

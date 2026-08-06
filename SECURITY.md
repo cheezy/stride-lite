@@ -160,11 +160,13 @@ document apart from its measured duration — on a host with PowerShell availabl
 marker gate's outcomes, driving the `.ps1`'s own functions through the same
 fixtures as the bash stage.
 
-**Two divergences are known and recorded rather than hidden.** The `.ps1` cannot
-read an OS-level pipe, so it cannot be driven end to end by a test; and it
-currently re-splits each command through `Start-Process`, so only the first
-token reaches the shell. Both are filed as defects and both are reported by the
-test suites as named skips rather than passing silently.
+**One divergence is known, and it is recorded rather than hidden.** The `.ps1`
+cannot read an OS-level pipe, so it cannot be driven end to end by a test; it is
+filed as D215 and the suites report it as a named skip rather than passing
+silently. A second — the executor re-splitting each command so only its first
+token reached the shell, which meant every multi-word hook command silently did
+nothing on Windows — was found by these suites and has since been
+**fixed** (D218); both suites now assert that behaviour instead of skipping it.
 
 **The PowerShell executor has not been verified on a real Windows host.** What
 has been verified is that its functions, driven directly under `pwsh` on macOS,

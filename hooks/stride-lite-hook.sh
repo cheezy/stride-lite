@@ -54,7 +54,13 @@ if [ "$_delegate_to_ps1" = "true" ]; then
     echo "stride-lite-hook.sh: Windows detected but powershell.exe not found in PATH" >&2
     exit 2
   fi
-  exec powershell.exe -ExecutionPolicy Bypass -File "$PS1_SCRIPT" "$PHASE"
+  # -NoProfile is load-bearing, not hygiene. The .ps1 now invokes bash through
+  # PowerShell's call operator, which resolves a FUNCTION or ALIAS named `bash`
+  # before the executable -- something Start-Process -FilePath could not do. A
+  # user profile with `function bash { wsl bash $args }` would run that instead,
+  # never set $LASTEXITCODE, and under Set-StrictMode the read of it becomes a
+  # terminating error that kills the hook with no JSON emitted.
+  exec powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$PS1_SCRIPT" "$PHASE"
 fi
 
 # --- Pure-bash JSON value extractor (no jq dependency) ---

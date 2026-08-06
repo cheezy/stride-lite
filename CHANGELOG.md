@@ -30,6 +30,12 @@ Every skill now carries a Red flags list and a Rationalization Table, and the wo
 
 The workflow documentation, `README.md` and `AGENTS.md` were swept for statements the preceding tasks made false: the eight-step loop summary now names the three gated sub-steps, the repository layout lists the new files, and the "no multi-harness fallbacks" rule explicitly states that dispatching another *plugin's* agent is not the thing it forbids. The telemetry vocabulary grew from seven names to ten, and every rendering of it — the contract example, three walkthrough iterations, and the README's count — moved together.
 
+### Fixed — the PowerShell executor dropped all but the first token of every command (D218)
+
+`hooks/stride-lite-hook.ps1` ran each `.stride_lite.md` command through `Start-Process -FilePath bash -ArgumentList '-c', $cmd`, and `Start-Process` **re-splits** that argument — so `bash` received only the first whitespace-delimited token as its `-c` script and the rest as positional parameters a `-c` script ignores. A `before_task` block of `echo ran > proof.txt` created no file and the section still reported `status: success`. On native Windows, the only platform this file runs on, every multi-word hook command silently did nothing while the workflow recorded the hooks as clean.
+
+Found by the new hook suite's parity stage while implementing W2018: single-token commands like `true` and `false` behave identically under both executors, which is exactly why the JSON comparison passed and why nothing caught this before. Fixed by invoking through PowerShell's call operator — `& bash -c $execTrimmed 1>$out 2>$err` — which passes the variable's contents as one argument without re-parsing, and redirects the child's real streams to files rather than through a .NET pipe the parent must drain. `ProcessStartInfo.ArgumentList` would also have solved the splitting and was rejected on two grounds, both measured rather than assumed: it deadlocks on a chatty command unless the streams are drained asynchronously, and it does not exist in .NET Framework — `stride-lite-hook.sh` delegates specifically to `powershell.exe`, so it would have thrown on the real target. Both suites' D218 skips are now assertions on the observable effect, because the exit codes agreed throughout.
+
 ### Changed — `install.sh` no longer ships the test suites
 
 `hooks/` is copied wholesale, so the two new suites would have landed in every installed plugin as dead weight. They are removed after the copy. `SECURITY.md` is now copied.

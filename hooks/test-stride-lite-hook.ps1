@@ -207,8 +207,13 @@ $rc = Invoke-StrideLiteSection -Section $Section
         Write-Host ""
         Write-Host "Invoke-StrideLiteSection — output truncation"
 
-        Write-Skipped "output truncation to the last 50 lines" `
-            "D218 — the executor re-splits a command through Start-Process, so a multi-word chatty command never runs"
+        $tail = "## before_task`n`n``````bash`ni=1; while [ `$i -le 120 ]; do echo line-`$i; i=`$((i + 1)); done; false`n``````"
+        $d = New-Fixture 'ps-tail' $tail
+        $r = Invoke-Section $d 'before_task'
+        Assert-Eq "the chatty failing command returns 2" $r.Rc 2
+        Assert-Has "the tail keeps the last line" $r.Json 'line-120'
+        Assert-Has "the tail keeps exactly the last 50" $r.Json 'line-71'
+        Assert-Lacks "the tail drops everything before the last 50" $r.Json 'line-70'
 
         $d = New-Fixture 'ps-fail-first' "## after_task`n`n``````bash`nfalse`necho unreached`n``````"
         $r = Invoke-Section $d 'after_task'

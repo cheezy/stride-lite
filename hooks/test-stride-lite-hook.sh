@@ -722,6 +722,9 @@ if [ ! -f "$HOOK_PS1" ]; then
 elif [ -z "$PS_BIN" ]; then
   skip "parity: .sh and .ps1 emit equivalent JSON" "no pwsh or powershell on PATH"
   skip "parity: .sh and .ps1 agree on the failure shape" "no pwsh or powershell on PATH"
+  skip "parity: the .ps1 executor runs a multi-word command too" "no pwsh or powershell on PATH"
+  skip "parity: the .ps1 executor runs a command containing a semicolon" "no pwsh or powershell on PATH"
+  skip "parity: the .ps1 executor runs a command containing a pipe" "no pwsh or powershell on PATH"
 else
   PARITY_DIR="$SANDBOX/parity"
   mkdir -p "$PARITY_DIR"
@@ -808,36 +811,35 @@ PSEOF
     assert_has "parity: the .sh success JSON reports a duration" "$SH_SUCCESS" '"duration_seconds":'
     assert_has "parity: the .ps1 success JSON reports a duration" "$PS_SUCCESS" '"duration_seconds":'
 
-    # --- A known divergence, recorded rather than hidden ------------------
+    # --- A multi-word command runs under BOTH executors (D218) -----------
     #
-    # The two executors agree on the JSON above because every fixture command in
-    # it is a single token. They do NOT agree on whether a MULTI-WORD command
-    # runs at all: the .ps1 passes each command through
-    # `Start-Process -ArgumentList '-c', $cmd`, which re-splits the argument, so
-    # bash receives only the first token as its script. `echo x > f` creates no
-    # file and the section still reports success.
+    # The JSON comparisons above agree even on a broken executor, because every
+    # fixture command in them is a single token. This is the case that does not:
+    # until D218 was fixed, the .ps1 passed each command through
+    # `Start-Process -ArgumentList '-c', $cmd`, which re-split it, so bash got
+    # only the first token. `echo ran > proof.txt` created no file and the
+    # section still reported success.
     #
-    # Filed as D218. Asserting the broken behaviour would cement it, and
-    # asserting the correct behaviour would leave the suite permanently red, so
-    # the divergence is proven once here and reported as a SKIP naming the
-    # defect -- the same treatment D215 gets. When D218 is fixed this block
-    # becomes a real parity assertion.
+    # Assert on the OBSERVABLE EFFECT, not the exit code: the exit code agreed
+    # the whole time, which is exactly why nothing caught this for so long.
     DIVERGE_DIR="$SANDBOX/diverge"
     mkdir -p "$DIVERGE_DIR"
-    # A RELATIVE target, deliberately. Interpolating the sandbox path into the
-    # redirect meant a sandbox whose path contains a space split the command and
-    # wrote OUTSIDE the sandbox. run_stride_lite_section cds to PROJECT_DIR
-    # first, so a relative redirect is confined by construction and there is no
-    # interpolation left to get wrong.
-    printf '## before_task\n\n```bash\necho ran > proof.txt\n```\n' > "$DIVERGE_DIR/.stride_lite.md"
-    rm -f "$DIVERGE_DIR/proof.txt"
+    # Relative target, so the fixture is confined by the executor's own cd.
+    # Two commands: a redirect and a semicolon-joined pair, because they fail
+    # for different reasons under a re-splitting executor.
+    printf '## before_task\n\n```bash\necho ran > proof.txt\na=1; echo $a > proof2.txt\necho a | tr a z > proof3.txt\n```\n' \
+      > "$DIVERGE_DIR/.stride_lite.md"
+
+    rm -f "$DIVERGE_DIR/proof.txt" "$DIVERGE_DIR/proof2.txt" "$DIVERGE_DIR/proof3.txt"
     _run_section "$DIVERGE_DIR" before_task
-    if [ -f "$DIVERGE_DIR/proof.txt" ]; then
-      ok "the .sh executor runs a multi-word command"
-    else
-      nope "the .sh executor runs a multi-word command" "proof.txt created" "not created"
-    fi
-    rm -f "$DIVERGE_DIR/proof.txt"
+    assert_eq "the .sh executor runs a multi-word command" \
+      "$([ -f "$DIVERGE_DIR/proof.txt" ] && echo yes || echo no)" "yes"
+    assert_eq "the .sh executor runs a command containing a semicolon" \
+      "$([ -f "$DIVERGE_DIR/proof2.txt" ] && cat "$DIVERGE_DIR/proof2.txt" | tr -d '\n')" "1"
+    assert_eq "the .sh executor runs a command containing a pipe" \
+      "$([ -f "$DIVERGE_DIR/proof3.txt" ] && cat "$DIVERGE_DIR/proof3.txt" | tr -d '\n')" "z"
+
+    rm -f "$DIVERGE_DIR/proof.txt" "$DIVERGE_DIR/proof2.txt" "$DIVERGE_DIR/proof3.txt"
     PS_DIV="$SANDBOX/diverge-harness.ps1"
     cat > "$PS_DIV" <<'PSEOF'
 param([string]$HookPs1, [string]$FixtureDir)
@@ -850,12 +852,12 @@ $ProjectDir   = $FixtureDir
 $null = Invoke-StrideLiteSection -Section 'before_task'
 PSEOF
     "$PS_BIN" -NoProfile -File "$PS_DIV" -HookPs1 "$HOOK_PS1" -FixtureDir "$DIVERGE_DIR" >/dev/null 2>&1
-    if [ -f "$DIVERGE_DIR/proof.txt" ]; then
-      ok "the .ps1 executor runs a multi-word command (D218 appears fixed — turn this into a parity assertion)"
-    else
-      skip "parity: a multi-word command runs under both executors" \
-           "D218 — the .ps1 re-splits the command through Start-Process, so only its first token reaches bash"
-    fi
+    assert_eq "parity: the .ps1 executor runs a multi-word command too" \
+      "$([ -f "$DIVERGE_DIR/proof.txt" ] && echo yes || echo no)" "yes"
+    assert_eq "parity: the .ps1 executor runs a command containing a semicolon" \
+      "$([ -f "$DIVERGE_DIR/proof2.txt" ] && cat "$DIVERGE_DIR/proof2.txt" | tr -d '\n')" "1"
+    assert_eq "parity: the .ps1 executor runs a command containing a pipe" \
+      "$([ -f "$DIVERGE_DIR/proof3.txt" ] && cat "$DIVERGE_DIR/proof3.txt" | tr -d '\n')" "z"
   fi
 fi
 
