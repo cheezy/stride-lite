@@ -1251,8 +1251,8 @@ else
     "names=[$TELEM_NAMES] steps=[$TELEM_STEPS]"
 fi
 
-assert_eq "the telemetry vocabulary names nine steps" \
-  "$(printf '%s\n' "$TELEM_NAMES" | grep -c .)" "9"
+assert_eq "the telemetry vocabulary names ten steps" \
+  "$(printf '%s\n' "$TELEM_NAMES" | grep -c .)" "10"
 
 # stride's names must NOT appear — they describe hooks stride-lite cannot run.
 TELEM_FOREIGN=""
@@ -1366,12 +1366,12 @@ awk '/^[ \t]*```json$/ { inb=1; n=0; next }
 while IFS= read -r _n; do
   [ -n "$_n" ] || continue
   TELEM_BLOCK_COUNT=$(( TELEM_BLOCK_COUNT + 1 ))
-  [ "$_n" -eq 9 ] || TELEM_BAD_BLOCK="$TELEM_BAD_BLOCK [block $TELEM_BLOCK_COUNT has $_n entries]"
+  [ "$_n" -eq 10 ] || TELEM_BAD_BLOCK="$TELEM_BAD_BLOCK [block $TELEM_BLOCK_COUNT has $_n entries]"
 done < "$_telem_blocks_file"
 
 assert_eq "the skill carries four telemetry JSON blocks (contract + three iterations)" \
   "$TELEM_BLOCK_COUNT" "4"
-assert_eq "every telemetry JSON block carries exactly nine entries" "$TELEM_BAD_BLOCK" ""
+assert_eq "every telemetry JSON block carries exactly ten entries" "$TELEM_BAD_BLOCK" ""
 
 # Bracket balance per block — a truncated block is the failure a count alone misses.
 TELEM_UNBALANCED="$(awk '/^[ \t]*```json$/ { inb=1; o=0; c=0; t=0; next }
@@ -1417,24 +1417,28 @@ _slice_step() {
 }
 XT_6A="$SANDBOX/step-6a.md"
 XT_6B="$SANDBOX/step-6b.md"
+XT_6C="$SANDBOX/step-6c.md"
 _slice_step "### Step 6a" > "$XT_6A"
 _slice_step "### Step 6b" > "$XT_6B"
+_slice_step "### Step 6c" > "$XT_6C"
 
 # A guard on the guards: an awk change that silently emptied either slice would
 # turn every grep -qv below into a free pass. Assert non-empty FIRST, and assert
 # the slices are disjoint -- 6a's text must not bleed into 6b's.
-if [ -s "$XT_6A" ] && [ -s "$XT_6B" ]; then
-  ok "both gated-step slices extracted non-empty"
+if [ -s "$XT_6A" ] && [ -s "$XT_6B" ] && [ -s "$XT_6C" ]; then
+  ok "all three gated-step slices extracted non-empty"
 else
-  nope "both gated-step slices extracted non-empty" "content" "6a/6b empty"
+  nope "all three gated-step slices extracted non-empty" "content" "6a/6b/6c empty"
 fi
 assert_eq "the 6a slice does not swallow Step 6b" \
   "$(grep -c '^### Step 6b' "$XT_6A")" "0"
-assert_eq "the 6b slice does not swallow Step 7" \
-  "$(grep -c '^### Step 7' "$XT_6B")" "0"
+assert_eq "the 6b slice does not swallow Step 6c" \
+  "$(grep -c '^### Step 6c' "$XT_6B")" "0"
+assert_eq "the 6c slice does not swallow Step 7" \
+  "$(grep -c '^### Step 7' "$XT_6C")" "0"
 
 # --- Both steps are gated, and the gate is a conjunction, not a preference ---
-for _step in 6a 6b; do
+for _step in 6a 6b 6c; do
   eval "_f=\$XT_$(printf '%s' "$_step" | tr 'a-z' 'A-Z')"
   assert_has "Step $_step declares itself optional and gated" "$_f" \
     "optional and gated"
@@ -1790,6 +1794,294 @@ assert_eq "the repo gitignores .exploratory/" \
 assert_has "the .exploratory/ entry says why it is ignored" "$XT_GITIGNORE" \
     "OUTSIDE the test tree"
 
+# --- 6c: the gate, and the placeholder rule it turns on -------------------
+# `- (none)` is what stride-lite's OWN template renders for an empty list. It is
+# a different string from stride's "None — no security surface" and from the
+# security plugin's own "None — ..." verdict convention; a gate that matched
+# stride's literal would never fire correctly on a stride-lite task file.
+assert_has "6c gates on a non-empty Security considerations section" "$XT_6C" \
+    "at least one real consideration"
+assert_has "6c gates on the security plugin being available" "$XT_6C" \
+    '`stride-security-review` plugin is available'
+assert_has "6c checks it can actually dispatch the security-reviewer" "$XT_6C" \
+    "not implied by the first"
+# Anchor on the RULES, not the rationale sentence below them. The earlier
+# needles matched only the "Forms 3 and 4 exist because..." paragraph, so both
+# rules could be deleted outright with the suite green.
+assert_eq "6c enumerates exactly four placeholder forms" \
+  "$(awk '/^#### Which section entries count/{f=1} f&&/^#### Count first/{exit} f&&/^[0-9]\. /{n++} END{print n+0}' "$XT_6C")" "4"
+assert_has "6c treats an empty entry as a placeholder" "$XT_6C" \
+    "1. is empty, **or**"
+assert_has "6c treats a bare none as a placeholder" "$XT_6C" \
+    '3. is `none`, **or**' 
+assert_has "6c treats none-plus-separator as a placeholder" "$XT_6C" \
+    "followed by a separator: an em dash"
+assert_has "6c excludes the template's own (none) placeholder" "$XT_6C" \
+    "the literal stride-lite's own template renders"
+assert_has "6c also excludes the None-em-dash form a hand-written file can carry" "$XT_6C" \
+    "None — no security surface"
+assert_has "6c matches the placeholder case-insensitively" "$XT_6C" \
+    "so \`(None)\` and \`(NONE)\` are placeholders too"
+# A bullet that merely says the word "none" mid-sentence is a real consideration.
+assert_has "6c keeps the placeholder list closed" "$XT_6C" \
+    "closed and short on purpose"
+assert_has "6c checks availability without executing plugin content" "$XT_6C" \
+    "never by executing plugin content to probe for it"
+# An absent section and an explicit (none) are different facts and must not
+# collapse into one skip reason -- "could not" versus "never considered".
+assert_has "6c separates an absent section from an explicit (none)" "$XT_6C" \
+    "absence of evidence"
+# Counting BEFORE gating is what stops an empty section manufacturing a loop.
+assert_has "6c counts the considerations before opening the gate" "$XT_6C" \
+    "before opening the gate"
+assert_has "6c makes the anomaly rule unreachable at N = 0" "$XT_6C" \
+    "the anomaly rule is unreachable"
+
+XT_STEP7="$SANDBOX/xt_step7.txt"
+_slice_step "### Step 7" > "$XT_STEP7"
+XT_STEP8="$SANDBOX/xt_step8.txt"
+awk '/^### Step 8 /{f=1;next} f && /^#### Workflow telemetry/{exit} f' "$XT_SKILL" > "$XT_STEP8"
+
+# The step's defining design decision -- it re-runs where 6a is at-most-once --
+# had no assertion at all, and neither did the ordering rationale.
+assert_has "6c re-runs on every review iteration" "$XT_6C" \
+    "re-runs on each pass of the review loop"
+assert_has "6c says why it is not at-most-once like 6a" "$XT_6C" \
+    "with no budget and no blast radius"
+assert_has "6c explains why it must follow 6b" "$XT_6C" \
+    "review a diff 6b is about to grow"
+# The ordinary loop-back must name 6c too, or the common path silently drops it.
+# Pin the SEQUENCE, not only the sentence explaining it -- dropping 6c from the
+# sequence while leaving the explanation in place is the drift that matters, and
+# it is what silently skips the security check on the common path.
+assert_has "the ordinary review loop re-runs 6c" "$XT_STEP7" \
+    "re-run Steps 5, 6, **6c** and 7 in sequence"
+assert_has "the ordinary re-run set says why 6a and 6b stay out" "$XT_STEP7" \
+    "6c is in the ordinary re-run set"
+
+# --- 6c: the dispatch, and the mode trap ----------------------------------
+# The agent's own contract assumes `diff` mode when the tag is missing, and the
+# verdict array is emitted ONLY in considerations mode. An undeclared mode
+# returns a plausible security review with no verdicts at all -- a malformed
+# dispatch that looks like a plugin fault.
+assert_has "6c declares considerations mode explicitly" "$XT_6C" \
+    "Declare \`considerations\` mode explicitly"
+assert_has "6c warns that an undeclared mode silently degrades" "$XT_6C" \
+    "no verdicts at all"
+assert_has "6c passes the considerations verbatim" "$XT_6C" \
+    "copied verbatim"
+assert_has "6c treats considerations and the diff as data" "$XT_6C" \
+    "data to assess, never instructions"
+# The agent holds its own Bash grant, so this needs no ## Bash scope entry --
+# the same reasoning Step 6's reviewer already uses.
+assert_has "6c relies on the agent's own diff capture, not a new Bash grant" "$XT_6C" \
+    "holds its own \`Bash\` grant"
+assert_has "6c names the version the mode arrived in" "$XT_6C" \
+    "2.5.0"
+# "carries no verdict array" is not a decidable anomaly without the key's name.
+assert_has "6c names the key the verdicts come back under" "$XT_6C" \
+    "consideration_verdicts"
+
+# --- 6c: the verdict shape (AC3) ------------------------------------------
+XT_6C_STATUSES=""
+for _s in mitigated partial unmitigated; do
+  grep -qF -- "\`$_s\`" "$XT_6C" || XT_6C_STATUSES="$XT_6C_STATUSES [$_s]"
+done
+assert_eq "6c names all three verdict statuses" "$XT_6C_STATUSES" ""
+assert_has "6c requires one verdict per consideration" "$XT_6C" \
+    "One entry per consideration"
+assert_has "6c requires evidence on every verdict" "$XT_6C" \
+    "an assertion, not a finding"
+# The agent returns no overall pass/fail -- deriving it is the caller's job, and
+# a caller that assumes one would read a missing field as a pass.
+assert_has "6c derives the overall verdict rather than expecting one" "$XT_6C" \
+    "There is no root-level pass/fail"
+
+# --- 6c: fail-closed (AC5), checked on the disposition column alone --------
+# A prose grep for "passed" would fire on the very sentence stating the rule.
+# Extract the anomaly table's disposition cells and assert over those: a cell
+# has no room for a rule statement, so the check cannot be satisfied by the
+# text that describes it.
+XT_6C_ANOM="$SANDBOX/step-6c-anomalies.txt"
+awk -F'|' '
+  /^\| Anomaly \| Disposition \|/ { f=1; next }
+  f && /^\|[-: |]+\|$/            { next }
+  f && /^\|/                      { gsub(/^ +| +$/,"",$3); print $3; next }
+  f                               { exit }' "$XT_6C" > "$XT_6C_ANOM"
+if [ -s "$XT_6C_ANOM" ]; then
+  ok "the 6c anomaly table extracted non-empty"
+else
+  nope "the 6c anomaly table extracted non-empty" "disposition cells" "(empty)"
+fi
+assert_eq "6c enumerates eight anomaly cases" \
+  "$(grep -c . "$XT_6C_ANOM")" "8"
+# The row COUNT and the disposition column were both pinned, but not what the
+# rows are about -- so a condition could be reworded into its own opposite with
+# the suite green. AC5 names three cases specifically; pin those.
+XT_6C_ROWS=""
+for _c in "no fenced JSON block" "carries no verdict array" "present but empty"           "Fewer entries than the N counted" "outside the three-value enum"           "no evidence" "corresponding to no counted consideration"           "unreachable at call time"; do
+  grep -qF -- "$_c" "$XT_6C" || XT_6C_ROWS="$XT_6C_ROWS [$_c]"
+done
+assert_eq "every anomaly row names its own condition" "$XT_6C_ROWS" ""
+# THE negative for AC5. Nothing in a disposition cell may resolve to a pass.
+assert_eq "no anomaly disposition resolves to a pass" \
+  "$(grep -ciE 'mitigated|passed|approved|proceed to Step 8' "$XT_6C_ANOM")" "0"
+# And the disposition vocabulary is closed at two values, so a third could not
+# be introduced without the test noticing.
+XT_6C_BADDISP=""
+while IFS= read -r _d; do
+  [ -n "$_d" ] || continue
+  case "$_d" in
+    *"changes_requested"*|*"Clean skip"*) ;;
+    *) XT_6C_BADDISP="$XT_6C_BADDISP [$_d]" ;;
+  esac
+done < "$XT_6C_ANOM"
+assert_eq "every anomaly disposition is a loop-back or a recorded skip" \
+  "$XT_6C_BADDISP" ""
+assert_has "6c states the fail-closed rule in its own words" "$XT_6C" \
+    "never dispositioned as \`mitigated\`"
+assert_has "6c distinguishes fail-closed from failing the task" "$XT_6C" \
+    "It does not mean this step fails the task"
+assert_has "a dispatch that never ran is a skip, not a loop" "$XT_6C" \
+    "produced no evidence in either direction"
+
+# --- 6c writes nothing it does not own ------------------------------------
+assert_has "6c never writes into the Review Report" "$XT_6C" \
+    "this skill never writes into it"
+assert_has "6c never edits the Security considerations section" "$XT_6C" \
+    "never edits \`## Security considerations\`"
+assert_has "6c does not hand its verdicts to the reviewer" "$XT_6C" \
+    "reaches its own conclusions from its own pass"
+# Consideration and evidence strings are author-authored and nothing upstream
+# redacts them; the verdicts are routed to the Completion Summary and surfaced
+# at the cap, so both carriers need the rule.
+assert_has "6c redacts rather than pasting consideration or evidence text" "$XT_6C" \
+    "REDACTED — text embedded a credential"
+assert_has "6c echoes verbatim only to the agent, not into the record" "$XT_6C" \
+    "restate it in your own words"
+
+# --- Step 8 records the security outcome ----------------------------------
+assert_has "Step 8 records the security-considerations outcome" "$XT_STEP8" \
+    "The security-considerations outcome"
+assert_has "Step 8 carries the redaction rule for considerations" "$XT_STEP8" \
+    "out of a consideration or an evidence string"
+assert_has "Step 8 keeps the two skip reasons distinct" "$XT_STEP8" \
+    "there was no readable section"
+# Step 7 tells the reader Step 8 labels stale coverage; that label must exist.
+assert_has "Step 8 labels coverage predating a security fix" "$XT_STEP8" \
+    "pre-dating the security fix"
+
+# --- Step 7's security-escalation branch (AC4) ----------------------------
+# Both slices are also built later in this file for the session-branch
+# assertions; building them here too is idempotent and keeps each block
+# readable on its own rather than depending on where it sits in the file.
+XT_STEP7="$SANDBOX/xt_step7.txt"
+_slice_step "### Step 7" > "$XT_STEP7"
+XT_AGENTS="$REPO_ROOT/AGENTS.md"
+assert_has "Step 7 carries the security-escalation branch" "$XT_STEP7" \
+    "Security-escalation branch"
+# Each branch needs its OWN cap sentence: sharing one phrasing would make both
+# assertions vacuous, since either could satisfy the other's needle.
+assert_has "the security escalation reuses the existing cap" "$XT_STEP7" \
+    "bounded by the same \`max_review_iterations\` cap"
+assert_eq "the session branch's cap sentence stays single-site" \
+  "$(grep -c 'The cap is the same `max_review_iterations`' "$XT_STEP7")" "1"
+assert_has "the security escalation adds no second cap" "$XT_STEP7" \
+    "Do not add a second cap"
+assert_has "the two escalations share one increment per iteration" "$XT_STEP7" \
+    "One increment per iteration, not one per branch"
+assert_has "reaching Step 8 is a conjunction of all three verdicts" "$XT_STEP7" \
+    "necessary and no longer sufficient"
+assert_has "the conjunction is scoped to what 6c returned, not what it listed" "$XT_STEP7" \
+    "**returned a verdict for** came back"
+assert_has "a skipped 6c satisfies the conjunction vacuously" "$XT_STEP7" \
+    "satisfies this conjunct vacuously"
+assert_has "6a does not re-enter on the security escalation" "$XT_STEP7" \
+    "Step 6a does not re-enter on this branch"
+assert_has "coverage predating a security fix is labelled as such" "$XT_STEP7" \
+    "pre-dating the security fix"
+
+# --- task-reviewer documents the verdict array (AC6) ----------------------
+# agents/task-reviewer.md had no coverage at all before this task.
+XT_REVIEWER="$REPO_ROOT/agents/task-reviewer.md"
+XT_RV_STRUCT="$SANDBOX/reviewer-structured.txt"
+awk '/^### Structured result$/{f=1;next} f && /^## /{exit} f' "$XT_REVIEWER" > "$XT_RV_STRUCT"
+if [ -s "$XT_RV_STRUCT" ]; then
+  ok "the reviewer's Structured result section extracted non-empty"
+else
+  nope "the reviewer's Structured result section extracted non-empty" "content" "(empty)"
+fi
+assert_has "the reviewer documents the security_considerations object" "$XT_RV_STRUCT" \
+    '"security_considerations"'
+assert_has "the reviewer documents the per-consideration array" "$XT_RV_STRUCT" \
+    '"considerations"'
+XT_RV_MISSING=""
+for _f in mitigated partial unmitigated evidence consideration; do
+  grep -qF -- "\"$_f\"" "$XT_RV_STRUCT" || XT_RV_MISSING="$XT_RV_MISSING [$_f]"
+done
+assert_eq "the verdict array documents its full entry shape" "$XT_RV_MISSING" ""
+assert_has "a single bad entry cannot leave the section passed" "$XT_RV_STRUCT" \
+    "can never leave the section status at"
+# The nested array arrived at stride schema 1.5, so a block citing 1.1 could not
+# legitimately carry it. Pin the cited version to one that has the field.
+assert_eq "the reviewer cites a schema version that carries considerations[]" \
+  "$(grep -oE 'schema_version .[0-9]+\.[0-9]+.' "$XT_REVIEWER" | sort -u | grep -c '1\.6')" "1"
+# The citation is written schema_version `"1.1"` -- backtick then quote -- so a
+# pattern expecting a single character between them can never match, and the
+# negative passed against the very defect it was written to catch.
+assert_eq "the reviewer no longer cites the pre-considerations schema 1.1" \
+  "$(grep -c 'schema_version [^0-9]*1\.1' "$XT_REVIEWER")" "0"
+# Stronger: every citation in the file must resolve to the same version.
+assert_eq "every schema citation in the reviewer agrees" \
+  "$(grep -oE 'schema_version [^0-9]*[0-9]+\.[0-9]+' "$XT_REVIEWER" | grep -oE '[0-9]+\.[0-9]+' | sort -u | tr '\n' ' ')" \
+  "1.6 "
+assert_has "the reviewer has a security-considerations methodology step" "$XT_REVIEWER" \
+    "**Security considerations.**"
+# The reviewer's placeholder rule must not be a SHORTER restatement of the
+# workflow's -- two parsers of one section that disagree describe it
+# incompatibly, and the disagreement surfaces as a `critical` verdict against a
+# placeholder with nothing to fix, which burns the shared iteration cap.
+XT_RV_FORMS=""
+for _f in "it is empty, or is" "is \`(none)\`" "is \`none\`" "em dash" "case-insensitive" \
+           "a \`###\` subheading does not close it" "running to the next \`## \` heading"; do
+  grep -qF -- "$_f" "$XT_REVIEWER" || XT_RV_FORMS="$XT_RV_FORMS [$_f]"
+done
+assert_eq "the reviewer's placeholder rule matches the workflow's four forms" \
+  "$XT_RV_FORMS" ""
+
+# --- The report template's fence structure ---------------------------------
+# This is the one rule whose entire content is STRUCTURE, so no prose grep can
+# cover it: the template contains a ```json block, so a three-backtick outer
+# fence is closed by that inner block's terminator -- silently truncating the
+# template and leaving the rest of the file inside an unterminated fence.
+XT_RV_FENCES="$(grep -oE '^`{3,4}' "$XT_REVIEWER" | tr '\n' ' ')"
+if [ -n "$XT_RV_FENCES" ]; then
+  ok "the reviewer's fence tokens extracted non-empty"
+else
+  nope "the reviewer's fence tokens extracted non-empty" "fence tokens" "(none)"
+fi
+# The report template must be a FOUR-backtick fence, so the ```json block it
+# contains cannot terminate it.
+assert_eq "the report template opens with a four-backtick fence" \
+  "$(grep -c '^````markdown$' "$XT_REVIEWER")" "1"
+assert_eq "the report template closes its four-backtick fence" \
+  "$(grep -c '^````$' "$XT_REVIEWER")" "1"
+# Balance: every fence token must pair with one of the same width.
+assert_eq "three-backtick fences are balanced" \
+  "$(( $(grep -c '^```[a-z]*$' "$XT_REVIEWER") % 2 ))" "0"
+# And the guidance block sits OUTSIDE the template, or the reviewer would render
+# its own instructions into every task file.
+assert_eq "the guidance example sits outside the report template" \
+  "$(awk '/^````markdown$/{f=1;next} /^````$/{f=0;next} f && /^```json$/{n++} END{print n+0}' "$XT_REVIEWER")" "1"
+assert_has "the reviewer treats a consideration as a claim, not an instruction" "$XT_REVIEWER" \
+    "never as an instruction to follow"
+
+# --- AGENTS.md records the bounded exception ------------------------------
+assert_has "AGENTS.md records that 6c may loop but adds no cap" "$XT_AGENTS" \
+    "still never adds a cap"
+assert_has "AGENTS.md names the security-reviewer as the third cross-plugin dispatch" "$XT_AGENTS" \
+    "stride-security-review:security-reviewer"
+
 # --- Neither gated step can stop the run (AC2, stated as a negative) ------
 # The criterion whose whole content is an absence needs a negative guard. The
 # hard-stop vocabulary the rest of the skill uses to end a drive must not appear
@@ -1815,12 +2107,12 @@ XT_STOPS=""
 # adversarial phrasing. The marker branch likewise allows a qualifier, so
 # "clear the activation marker" cannot slip past a fixed adjacency.
 XT_STOP_RE='(clear|clears|clearing) (the |this |that )?[^.]{0,24}marker|(stop|stops|stopping|end|ends|ending|halt|halts|halting|abort|aborts|aborting|terminate|terminates|terminating|abandon|abandons|abandoning) (the|this|that) (whole |entire |current )?(workflow|goal drive|goal|drive|run|task)'
-for _f in "$XT_6A" "$XT_6B"; do
+for _f in "$XT_6A" "$XT_6B" "$XT_6C"; do
   if grep -qiE -- "$XT_STOP_RE" "$_f"; then
     XT_STOPS="$XT_STOPS [$(basename "$_f"): $(grep -ioE -- "$XT_STOP_RE" "$_f" | head -1)]"
   fi
 done
-assert_eq "neither gated step instructs the reader to stop the run" "$XT_STOPS" ""
+assert_eq "no gated step's own body instructs the reader to stop the run" "$XT_STOPS" ""
 
 # --- The move branch's command vocabulary is closed -----------------------
 # The suite pinned that the carve-out entries are PRESENT, never that the
@@ -1864,8 +2156,8 @@ XT_STEP7="$SANDBOX/xt_step7.txt"
 _slice_step "### Step 7" > "$XT_STEP7"
 assert_has "Step 7 carries the session-escalation branch" "$XT_STEP7" \
     "Session-escalation branch"
-assert_has "the escalation reuses the existing cap rather than adding one" "$XT_STEP7" \
-    "same \`max_review_iterations\`"
+assert_has "the session escalation reuses the existing cap" "$XT_STEP7" \
+    "The cap is the same \`max_review_iterations\`"
 # A re-run that stopped on its budget before reaching the defect has verified
 # nothing; reading it as confirmation is the failure this pins.
 assert_has "the escalation requires the re-run to re-reach the defect" "$XT_STEP7" \
@@ -1912,7 +2204,7 @@ assert_has "Step 8 records the exploratory outcome" "$XT_STEP8" \
 assert_has "Step 8 records a partial session as partial" "$XT_STEP8" \
     "rather than folded into"
 assert_has "Step 8 redacts findings rather than copying them" "$XT_STEP8" \
-    "never copy a credential"
+    "Restate findings in the workflow's own words"
 assert_has "Step 8 records the hardening outcome" "$XT_STEP8" \
     "The hardening outcome"
 assert_has "Step 8 phrases drafts as drafted, not run" "$XT_STEP8" \
@@ -1944,10 +2236,10 @@ assert_has "AGENTS.md records that neither gated step can fail a task" "$XT_AGEN
 XT_README="$REPO_ROOT/README.md"
 assert_eq "the README's telemetry step count matches the vocabulary" \
   "$(grep -oE 'records all [a-z]+ loop steps' "$XT_README" | head -1)" \
-  "records all nine loop steps"
+  "records all ten loop steps"
 # And the two gated sub-steps are documented where a reader looks for the loop,
 # not only inside the skill that implements them.
-for _sub in "Step 6a" "Step 6b"; do
+for _sub in "Step 6a" "Step 6b" "Step 6c"; do
   assert_eq "the README documents $_sub" \
     "$(grep -c "$_sub —" "$XT_README")" "1"
 done
