@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # smoke.sh — Stride Lite lib/ helper smoke test.
 #
-# Exercises the four lib/ helpers (slugify, resolve_output_path,
-# load_requirements_dir, parse_args) against known inputs and asserts the
-# expected behavior. Pure bash + POSIX utilities — no test framework, no
+# Exercises the five lib/ helpers (slugify, resolve_output_path,
+# load_requirements_dir, parse_args, select_workflow_branch) against known
+# inputs and asserts the expected behavior. Pure bash + POSIX utilities — no test framework, no
 # network, no external dependencies.
 #
 # The helper implementations below are byte-equivalent to the reference
@@ -346,6 +346,308 @@ if parse_args 'Hi' --requirements-dir >/dev/null 2>&1; then
 else
   ok "rejects flag without value"
 fi
+
+# ------------------------------------------------------------------
+# select_workflow_branch — mirrors lib/select_workflow_branch.md
+# ------------------------------------------------------------------
+
+# --- BEGIN mirrored lib/select_workflow_branch.md reference implementation ---
+select_workflow_branch() {
+  local task_file="${1:-}"
+  local complexity="" in_key_files=0 saw_key_files=0 line lower path probe
+  local -a seen=()
+
+  if [ -n "$task_file" ] && [ -f "$task_file" ] && [ -r "$task_file" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      # Markdown allows up to three leading spaces on a heading or table row,
+      # and an indented row that went uncounted would undercount key files —
+      # which fails toward skip-all, the one direction that ships an
+      # unreviewed diff. Normalize before matching.
+      line="${line#"${line%%[![:space:]]*}"}"
+
+      # Metadata line: "> Type: work · Complexity: small · Priority: medium"
+      case "$line" in
+        '> '*'Complexity:'*)
+          if [ -z "$complexity" ]; then
+            complexity="${line#*Complexity:}"
+            complexity="${complexity%%·*}"
+            complexity="${complexity#"${complexity%%[![:space:]]*}"}"
+            complexity="${complexity%"${complexity##*[![:space:]]}"}"
+            complexity="$(printf '%s' "$complexity" | tr '[:upper:]' '[:lower:]')"
+          fi
+          continue
+          ;;
+      esac
+
+      # Only the rows under the key-files heading count. Match it
+      # case-insensitively: "## Key Files" is the same section to a human, and
+      # treating it as a different one silently counts zero files.
+      # Match '## ' WITH the trailing space, never a bare '##'. A '###'
+      # subheading inside the section must fall through to the row check and
+      # leave the flag set — matching it here would close the section early and
+      # drop every row below it, which undercounts toward skip-all.
+      case "$line" in
+        '## '*)
+          lower="$(printf '%s' "$line" | tr '[:upper:]' '[:lower:]')"
+          case "$lower" in
+            '## key files'*) in_key_files=1; saw_key_files=1 ;;
+            *)               in_key_files=0 ;;
+          esac
+          continue
+          ;;
+      esac
+
+      [ "$in_key_files" -eq 1 ] || continue
+      case "$line" in
+        '|'*) ;;
+        *) continue ;;
+      esac
+
+      path="${line#|}"
+      path="${path%%|*}"
+      path="${path#"${path%%[![:space:]]*}"}"
+      path="${path%"${path##*[![:space:]]}"}"
+      path="${path#\`}"
+      path="${path%\`}"
+
+      # Header and separator rows both begin with "|" — drop them. Strip the
+      # characters a separator can legally contain and see whether anything is
+      # left; a bracket expression like [!-:| ] is read as a RANGE and silently
+      # drops real paths.
+      [ -z "$path" ] && continue
+      [ "$path" = "File" ] && continue
+      [ "$path" = "(none)" ] && continue
+      probe="${path//-/}"
+      probe="${probe//:/}"
+      [ -z "$probe" ] && continue
+
+      local dup=0 s
+      for s in ${seen+"${seen[@]}"}; do
+        [ "$s" = "$path" ] && { dup=1; break; }
+      done
+      [ "$dup" -eq 1 ] && continue
+      seen+=("$path")
+    done < "$task_file"
+  fi
+
+  # A file that HAS a key-files section we could read may legitimately list
+  # 0 or 1 paths. A file with no recognizable section at all told us nothing,
+  # and nothing is not evidence of a small task — take the safe branch.
+  if [ "$saw_key_files" -eq 0 ]; then
+    printf '%s' 'full'
+    return 0
+  fi
+
+  case "$complexity" in
+    small)
+      if [ "${#seen[@]}" -le 1 ]; then
+        printf '%s' 'skip-all'
+      else
+        printf '%s' 'explore-review'
+      fi
+      ;;
+    medium|large) printf '%s' 'full' ;;
+    *)            printf '%s' 'full' ;;
+  esac
+}
+# --- END mirrored lib/select_workflow_branch.md reference implementation ---
+
+echo ""
+echo "select_workflow_branch"
+
+# write_task_fixture <path> <metadata-line-or-NONE> <key-file-path>...
+write_task_fixture() {
+  local target="$1" meta="$2"; shift 2
+  mkdir -p "$(dirname "$target")"
+  {
+    echo "# Fixture task"
+    echo ""
+    [ "$meta" != "NONE" ] && { echo "$meta"; echo ""; }
+    echo "## Description"
+    echo ""
+    echo "Body prose that mentions Complexity: small in passing."
+    echo ""
+    echo "## Key files"
+    echo ""
+    if [ "$#" -eq 0 ]; then
+      echo "(none)"
+    else
+      echo "| File | Note |"
+      echo "|---|---|"
+      local f
+      for f in "$@"; do echo "| \`$f\` | why |"; done
+    fi
+    echo ""
+    echo "## Verification steps"
+    echo ""
+    echo "| Step | Expected |"
+    echo "|---|---|"
+    echo "| \`bash test/smoke.sh\` | passes |"
+  } > "$target"
+}
+
+MATRIX_DIR="$SANDBOX/matrix"
+SMALL_META='> Type: work · Complexity: small · Priority: medium'
+MEDIUM_META='> Type: work · Complexity: medium · Priority: high'
+LARGE_META='> Type: work · Complexity: large · Priority: high'
+
+# Row 1 — small with 0-1 key files skips everything.
+write_task_fixture "$MATRIX_DIR/t-small-1.md" "$SMALL_META" "lib/a.ex"
+assert_eq "small + 1 key file selects skip-all" \
+  "$(select_workflow_branch "$MATRIX_DIR/t-small-1.md")" "skip-all"
+
+write_task_fixture "$MATRIX_DIR/t-small-0.md" "$SMALL_META"
+assert_eq "small + (none) key files selects skip-all" \
+  "$(select_workflow_branch "$MATRIX_DIR/t-small-0.md")" "skip-all"
+
+# Row 2 — small with 2+ key files explores and reviews, but does not plan.
+write_task_fixture "$MATRIX_DIR/t-small-3.md" "$SMALL_META" "lib/a.ex" "lib/b.ex" "test/c.exs"
+assert_eq "small + 3 key files selects explore-review, not full" \
+  "$(select_workflow_branch "$MATRIX_DIR/t-small-3.md")" "explore-review"
+
+write_task_fixture "$MATRIX_DIR/t-small-2.md" "$SMALL_META" "lib/a.ex" "lib/b.ex"
+assert_eq "small + 2 key files crosses the review threshold" \
+  "$(select_workflow_branch "$MATRIX_DIR/t-small-2.md")" "explore-review"
+
+# Rows 3 and 4 — medium and large always do all three, whatever the count.
+write_task_fixture "$MATRIX_DIR/t-medium-1.md" "$MEDIUM_META" "lib/a.ex"
+assert_eq "medium + 1 key file selects full" \
+  "$(select_workflow_branch "$MATRIX_DIR/t-medium-1.md")" "full"
+
+write_task_fixture "$MATRIX_DIR/t-medium-0.md" "$MEDIUM_META"
+assert_eq "medium + no key files still selects full" \
+  "$(select_workflow_branch "$MATRIX_DIR/t-medium-0.md")" "full"
+
+write_task_fixture "$MATRIX_DIR/t-large-1.md" "$LARGE_META" "lib/a.ex"
+assert_eq "large + 1 key file selects full" \
+  "$(select_workflow_branch "$MATRIX_DIR/t-large-1.md")" "full"
+
+# Row 5 — the conservative fallback. Absence of evidence is not evidence of a
+# small task, so every unreadable signal dispatches everything.
+write_task_fixture "$MATRIX_DIR/t-unknown.md" '> Type: work · Complexity: enormous · Priority: low' "lib/a.ex"
+assert_eq "an unrecognized complexity falls back to full" \
+  "$(select_workflow_branch "$MATRIX_DIR/t-unknown.md")" "full"
+
+write_task_fixture "$MATRIX_DIR/t-nometa.md" NONE "lib/a.ex"
+assert_eq "a missing metadata line falls back to full" \
+  "$(select_workflow_branch "$MATRIX_DIR/t-nometa.md")" "full"
+
+assert_eq "a missing task file falls back to full" \
+  "$(select_workflow_branch "$MATRIX_DIR/does-not-exist.md")" "full"
+
+: > "$MATRIX_DIR/t-empty.md"
+assert_eq "an empty task file falls back to full" \
+  "$(select_workflow_branch "$MATRIX_DIR/t-empty.md")" "full"
+
+# Edge case: the same path twice is one file, so the threshold is not crossed.
+write_task_fixture "$MATRIX_DIR/t-dup.md" "$SMALL_META" "lib/a.ex" "lib/a.ex"
+assert_eq "a duplicate key-file path counts once, not twice" \
+  "$(select_workflow_branch "$MATRIX_DIR/t-dup.md")" "skip-all"
+
+# Edge case: the header and separator rows both start with "|" and must not be
+# counted — an empty table would otherwise report 2 and upgrade every task.
+printf '# T\n\n%s\n\n## Key files\n\n| File | Note |\n|---|---|\n\n## Next\n' "$SMALL_META" \
+  > "$MATRIX_DIR/t-emptytable.md"
+assert_eq "an empty key-files table counts 0, not its header rows" \
+  "$(select_workflow_branch "$MATRIX_DIR/t-emptytable.md")" "skip-all"
+
+# --- Hardened inputs: an undercounted key-files section fails toward skip-all,
+# --- which is the one direction that ships an unreviewed diff.
+
+# Heading cased differently is the same section to a human.
+printf '# T\n\n%s\n\n## Key Files\n\n| File | Note |\n|---|---|\n| `lib/a.ex` | x |\n| `lib/b.ex` | x |\n| `lib/c.ex` | x |\n' \
+  "$SMALL_META" > "$MATRIX_DIR/t-headingcase.md"
+assert_eq "a differently-cased Key Files heading still counts its rows" \
+  "$(select_workflow_branch "$MATRIX_DIR/t-headingcase.md")" "explore-review"
+
+# Markdown allows up to three leading spaces on a table row.
+printf '# T\n\n%s\n\n## Key files\n\n  | File | Note |\n  |---|---|\n  | `lib/a.ex` | x |\n  | `lib/b.ex` | x |\n' \
+  "$SMALL_META" > "$MATRIX_DIR/t-indented.md"
+assert_eq "indented key-files rows are still counted" \
+  "$(select_workflow_branch "$MATRIX_DIR/t-indented.md")" "explore-review"
+
+# "(none)" rendered as a table row is a placeholder, not a file.
+printf '# T\n\n%s\n\n## Key files\n\n| File | Note |\n|---|---|\n| (none) | |\n| `lib/a.ex` | x |\n' \
+  "$SMALL_META" > "$MATRIX_DIR/t-nonerow.md"
+assert_eq "a (none) table row is not counted as a file" \
+  "$(select_workflow_branch "$MATRIX_DIR/t-nonerow.md")" "skip-all"
+
+# A subheading inside the section must not close it — closing early drops every
+# row below and undercounts toward skip-all, which is the unsafe direction.
+printf '# T\n\n%s\n\n## Key files\n\n### Primary\n\n| File | Note |\n|---|---|\n| `lib/a.ex` | x |\n| `lib/b.ex` | x |\n| `lib/c.ex` | x |\n' \
+  "$SMALL_META" > "$MATRIX_DIR/t-subheading.md"
+assert_eq "a ### subheading inside key files does not drop its rows" \
+  "$(select_workflow_branch "$MATRIX_DIR/t-subheading.md")" "explore-review"
+
+printf '# T\n\n%s\n\n## Key files\n\n| File | Note |\n|---|---|\n| `lib/a.ex` | x |\n\n### Also\n\n| File | Note |\n|---|---|\n| `lib/b.ex` | x |\n' \
+  "$SMALL_META" > "$MATRIX_DIR/t-subheading-mid.md"
+assert_eq "rows after a mid-section subheading are still counted" \
+  "$(select_workflow_branch "$MATRIX_DIR/t-subheading-mid.md")" "explore-review"
+
+# No recognizable key-files section at all told us nothing about the surface area.
+printf '# T\n\n%s\n\n## Description\n\nBody.\n' "$SMALL_META" > "$MATRIX_DIR/t-nokeyfiles.md"
+assert_eq "a missing key-files section falls back to full, not skip-all" \
+  "$(select_workflow_branch "$MATRIX_DIR/t-nokeyfiles.md")" "full"
+
+# Complexity is matched case-insensitively.
+write_task_fixture "$MATRIX_DIR/t-caps.md" '> Type: work · Complexity: SMALL · Priority: medium' "lib/a.ex"
+assert_eq "an upper-case complexity value is recognized" \
+  "$(select_workflow_branch "$MATRIX_DIR/t-caps.md")" "skip-all"
+
+# The metadata line need not carry a trailing separator.
+write_task_fixture "$MATRIX_DIR/t-nosep.md" '> Complexity: small' "lib/a.ex"
+assert_eq "a metadata line with no trailing separator still parses" \
+  "$(select_workflow_branch "$MATRIX_DIR/t-nosep.md")" "skip-all"
+
+# Edge case: a goal whose every task is skip-all dispatches no agent at all.
+SKIPGOAL="$MATRIX_DIR/all-small-goal"
+write_task_fixture "$SKIPGOAL/task1.md" "$SMALL_META" "lib/a.ex"
+write_task_fixture "$SKIPGOAL/task2.md" "$SMALL_META"
+write_task_fixture "$SKIPGOAL/task3.md" "$SMALL_META" "lib/c.ex" "lib/c.ex"
+GOAL_DISPATCHES=0
+for _t in "$SKIPGOAL"/task*.md; do
+  [ "$(select_workflow_branch "$_t")" = "skip-all" ] || GOAL_DISPATCHES=$(( GOAL_DISPATCHES + 2 ))
+done
+assert_eq "an all-small goal dispatches zero agents across every task" "$GOAL_DISPATCHES" "0"
+
+# --- Byte-parity between the mirror above and lib/select_workflow_branch.md.
+# Without this the mirror can drift from the shipped spec and every assertion
+# above keeps passing against a copy nothing else uses.
+BRANCH_LIB_EXTRACT="$SANDBOX/branch-lib.sh"
+BRANCH_MIRROR_COPY="$SANDBOX/branch-mirror.sh"
+awk '/^```bash$/ { if (seen++) exit; inb=1; next } inb && /^```$/ { exit } inb { print }' \
+  "$REPO_ROOT/lib/select_workflow_branch.md" > "$BRANCH_LIB_EXTRACT"
+awk '/^# --- BEGIN mirrored lib\/select_workflow_branch/ { inb=1; next }
+     /^# --- END mirrored lib\/select_workflow_branch/   { exit }
+     inb { print }' "$SCRIPT_DIR/smoke.sh" > "$BRANCH_MIRROR_COPY"
+
+# Guard the extractors: two empty files diff clean and would pass vacuously.
+if [ -s "$BRANCH_LIB_EXTRACT" ] && [ -s "$BRANCH_MIRROR_COPY" ]; then
+  ok "both select_workflow_branch blocks extracted non-empty"
+else
+  nope "both select_workflow_branch blocks extracted non-empty" "two non-empty extracts" \
+    "lib=$(wc -l < "$BRANCH_LIB_EXTRACT") mirror=$(wc -l < "$BRANCH_MIRROR_COPY")"
+fi
+
+if BRANCH_DIFF="$(diff -u "$BRANCH_LIB_EXTRACT" "$BRANCH_MIRROR_COPY" 2>&1)"; then
+  ok "mirrored select_workflow_branch is byte-identical to lib/select_workflow_branch.md"
+else
+  nope "mirrored select_workflow_branch is byte-identical to lib/select_workflow_branch.md" \
+    "empty diff against the lib reference implementation" "$BRANCH_DIFF"
+fi
+
+# The matrix table in the workflow SKILL.md must carry every branch the helper
+# can return and every skip reason it can justify — prose and behaviour drifting
+# apart is the failure mode here.
+MATRIX_SKILL="$REPO_ROOT/skills/stride-lite-workflow/SKILL.md"
+MATRIX_MISSING=""
+for _row in 'skip-all' 'explore-review' 'full'; do
+  grep -q "\`$_row\`" "$MATRIX_SKILL" || MATRIX_MISSING="$MATRIX_MISSING $_row"
+done
+for _sig in 'Complexity' 'Key files' 'small_task_0_1_key_files' 'small_task_2_plus_key_files'; do
+  grep -q "$_sig" "$MATRIX_SKILL" || MATRIX_MISSING="$MATRIX_MISSING $_sig"
+done
+assert_eq "the workflow SKILL.md documents every branch and skip reason" "$MATRIX_MISSING" ""
 
 # ------------------------------------------------------------------
 # stride-lite-init template — mirrors skills/stride-lite-init/SKILL.md

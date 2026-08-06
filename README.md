@@ -196,12 +196,25 @@ Activate stride-lite-workflow on docs/implementation/PENDING/add-notifications/
 
 1. **Select the next task** — first `taskN.md` without a `## Completion Summary` section
 2. **Run the `## before_task` hook** from `.stride_lite.md` (blocking — non-zero exit stops the workflow)
-3. **Dispatch `stride-lite:task-explorer`** against the task file (appends `## Exploration Report`)
+3. **Dispatch `stride-lite:task-explorer`** against the task file (appends `## Exploration Report`) — **gated by the complexity decision matrix** (see below)
+   - **Step 3a — plan the implementation** — an in-context outline for `medium` and `large` tasks only; dispatches nothing and writes nothing
 4. **Implementation** — the workflow agent makes code changes per the task's acceptance criteria, patterns, and exploration findings
 5. **Run the `## after_task` hook** from `.stride_lite.md` (blocking — typically the place for `mix test`, `npm run lint`, etc.)
-6. **Dispatch `stride-lite:task-reviewer`** against the task file with the working-tree diff (appends `## Review Report`)
+6. **Dispatch `stride-lite:task-reviewer`** against the task file with the working-tree diff (appends `## Review Report`) — **gated by the same matrix row resolved at step 3**
 7. **Review-loop decision** — parse the review's status: `approved` → continue; `changes_requested` → loop back to step 4 (capped at **3 iterations** by default; configurable via `max_review_iterations`)
 8. **Completion summary + archive move** — append `## Completion Summary` to the task file. If this was the final task in the goal (no `task(K+1).md` exists), also append `## Completion Summary` to `goal.md`, run the `## after_goal` hook, and (as of **v0.10.0**) move the goal directory from `PENDING/` to `IMPLEMENTED/` (skipped with a warning if `after_goal` failed or the goal isn't under `/PENDING/`)
+
+**Decision matrix.** Steps 3, 3a and 6 are gated on two values the task file already carries — its `Complexity:` and the number of distinct paths in its `## Key files` table:
+
+| Complexity | Key files | Explore | Plan | Review |
+|---|---|:---:|:---:|:---:|
+| `small` | 0–1 | skip | skip | skip |
+| `small` | 2 or more | yes | skip | yes |
+| `medium` | any | yes | yes | yes |
+| `large` | any | yes | yes | yes |
+| absent or unrecognized | any | yes | yes | yes |
+
+So a one-line typo fix costs no agent dispatches, while anything touching two or more files is always reviewed. An unreadable signal falls through to the full path — absence of evidence is not evidence of a small task. Because the `.stride_lite.md` hooks auto-fire on the two dispatches, a skipped dispatch also skips its hook; every skip is recorded by name and reason in the task's `## Completion Summary`, so it stays auditable after the fact.
 
 The skill never POSTs to any API — it's a file-only orchestrator wrapping the existing surface (create-goal, create-task, init, task-explorer, task-reviewer). See `skills/stride-lite-workflow/SKILL.md` for the full contract.
 
