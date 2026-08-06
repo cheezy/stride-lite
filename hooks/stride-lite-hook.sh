@@ -18,10 +18,16 @@
 #   0 — success, no-op, or non-trigger
 #   2 — blocking PreToolUse failure (only meaningful for pre + before_task/after_task)
 #
+# Sections run only while the stride-lite-workflow orchestrator is driving a goal,
+# which it signals by writing .stride-lite/.orchestrator_active. Without a fresh
+# marker this script runs nothing and exits 0 — a standalone agent dispatch must
+# not fire the user's hooks. STRIDE_LITE_ALLOW_DIRECT=1 bypasses the gate.
+#
 # Cross-platform parity contract: this script and stride-lite-hook.ps1 MUST detect
-# the same three trigger conditions, produce equivalent single-line JSON results
-# for the same input, export the same environment key set under the same
-# empty-on-underivable rule, and apply the same exit-code contract.
+# the same three trigger conditions, apply the same activation-marker gate and
+# freshness window, produce equivalent single-line JSON results for the same
+# input, export the same environment key set under the same empty-on-underivable
+# rule, and apply the same exit-code contract.
 
 set -uo pipefail
 
@@ -106,6 +112,63 @@ _json_array_from_lines() {
     printf '"%s"' "$(_json_escape "$line")"
   done
   printf ']'
+}
+
+# --- Orchestrator activation marker ---
+# The workflow skill writes .stride-lite/.orchestrator_active when it starts a
+# goal drive and clears it on every exit path. Without a fresh marker the
+# trigger is a standalone dispatch — someone running stride-lite:task-explorer
+# against a single task file by hand, which the README documents — and firing
+# the user's before_task section there would run their test suite behind their
+# back.
+#
+# A missing, malformed or stale marker therefore means "run nothing, exit 0".
+# It NEVER blocks: blocking a standalone dispatch would break that documented
+# manual workflow, so the gate declines to act rather than declining to proceed.
+#
+# This is a COORDINATION mechanism, not a security boundary. Any local process
+# can write the file; it exists so two cooperating parts of this plugin agree
+# on whether a workflow is running, and nothing may rely on it for authorization.
+#
+# The marker deliberately does NOT live at .stride/ — that directory belongs to
+# the full Stride plugin, and a project may have both installed.
+MARKER_DIR_NAME=".stride-lite"
+MARKER_MAX_AGE_SECONDS=14400  # 4 hours, matching stride's window
+
+# 0 — a fresh marker is present (or the override is set); 1 — otherwise.
+# Re-read on every invocation: never cached, so the window cannot drift.
+_marker_is_fresh() {
+  [ "${STRIDE_LITE_ALLOW_DIRECT:-}" = "1" ] && return 0
+
+  local _marker="$PROJECT_DIR/$MARKER_DIR_NAME/.orchestrator_active"
+  [ -f "$_marker" ] && [ -r "$_marker" ] || return 1
+
+  local _content _started _now _started_secs _age
+  _content=$(cat "$_marker" 2>/dev/null) || return 1
+  [ -n "$_content" ] || return 1
+
+  _started=$(_extract_string "started_at" "$_content")
+  [ -n "$_started" ] || return 1
+
+  _now=$(date -u +%s 2>/dev/null) || return 1
+  # Portable across GNU date and BSD/macOS date; an unparseable stamp is stale.
+  #
+  # Accepted divergence, on the same terms as the malformed-encoding note above:
+  # GNU date accepts relative expressions ("now", "+1 day"), BSD date accepts
+  # only the canonical %Y-%m-%dT%H:%M:%SZ, and the .ps1's [datetime]::Parse
+  # accepts a third set. The parity contract covers the canonical marker the
+  # workflow skill writes and the three branches (fresh / absent / stale), not
+  # byte-level agreement on a hand-forged stamp. That is acceptable precisely
+  # because the marker is coordination, not authorization: anyone who can write
+  # a weird stamp can equally write a correct one.
+  _started_secs=$(date -u -d "$_started" +%s 2>/dev/null) \
+    || _started_secs=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$_started" +%s 2>/dev/null) \
+    || _started_secs=""
+  [ -n "$_started_secs" ] || return 1
+
+  _age=$(( _now - _started_secs ))
+  # A negative age means a future timestamp (clock skew or a forged marker).
+  [ "$_age" -ge 0 ] && [ "$_age" -le "$MARKER_MAX_AGE_SECONDS" ]
 }
 
 # --- Derived hook environment (stride-lite native) ---
@@ -535,6 +598,12 @@ case "$PHASE" in
 esac
 
 if [ -z "$HOOK_NAME" ]; then
+  exit 0
+fi
+
+# Gate on the activation marker BEFORE deriving the environment: a run we are
+# not going to perform should not read the user's task or goal markdown either.
+if ! _marker_is_fresh; then
   exit 0
 fi
 

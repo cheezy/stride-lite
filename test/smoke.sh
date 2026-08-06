@@ -522,9 +522,36 @@ refute_hook_err() {
   esac
 }
 
+# write_activation_marker <project-dir> [<seconds-ago>] — write the workflow's
+# activation marker so the hook will actually run a section. Every fixture
+# project below needs one: without it the gate makes the hook a no-op, which is
+# the whole point of W2010. Pass a seconds-ago value to forge a stale marker.
+# The timestamp arithmetic is portable across BSD/macOS and GNU date.
+write_activation_marker() {
+  local dir="$1" ago="${2:-0}" stamp
+  mkdir -p "$dir/.stride-lite"
+  # Epoch arithmetic FIRST, then format. `date -v` cannot express a negative
+  # seconds-ago (it renders as `-v--18000S`, which BSD date rejects), so the
+  # future-dated case must not go through it. `-r <epoch>` is BSD/macOS and
+  # `-d @<epoch>` is GNU; both accept any sign.
+  local epoch
+  epoch=$(( $(date -u +%s) - ago ))
+  stamp="$(date -u -r "$epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+    || date -u -d "@$epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"
+  if [ -z "$stamp" ]; then
+    # Never write an empty started_at: it reads as "not fresh", which would make
+    # a stale or future assertion pass for the wrong reason.
+    echo "write_activation_marker: no usable date(1) formatter on this host" >&2
+    return 1
+  fi
+  printf '{"session_id":"smoke","started_at":"%s","pid":%d}\n' "$stamp" "$$" \
+    > "$dir/.stride-lite/.orchestrator_active"
+}
+
 # Two fixture configs: every section succeeds vs. blocking/advisory sections fail.
 HOOK_PASS_DIR="$SANDBOX/hook-pass"
 mkdir -p "$HOOK_PASS_DIR"
+write_activation_marker "$HOOK_PASS_DIR"
 cat > "$HOOK_PASS_DIR/.stride_lite.md" <<'CONFIG'
 ## email
 
@@ -551,6 +578,7 @@ CONFIG
 
 HOOK_FAIL_DIR="$SANDBOX/hook-fail"
 mkdir -p "$HOOK_FAIL_DIR"
+write_activation_marker "$HOOK_FAIL_DIR"
 cat > "$HOOK_FAIL_DIR/.stride_lite.md" <<'CONFIG'
 ## email
 
@@ -652,6 +680,7 @@ ENV_GOAL_DIR="$HOOK_ENV_DIR/docs/implementation/PENDING/add-notifs"
 ENV_EVIL_DIR="$HOOK_ENV_DIR/docs/implementation/PENDING/evil-goal"
 ENV_OUTSIDE_DIR="$SANDBOX/outside-project/not-a-goal"
 mkdir -p "$ENV_GOAL_DIR" "$ENV_EVIL_DIR" "$ENV_OUTSIDE_DIR"
+write_activation_marker "$HOOK_ENV_DIR"
 
 printf '# Add notifications\n\nGoal body.\n'   > "$ENV_GOAL_DIR/goal.md"
 printf '# Wire up the socket\n\nTask body.\n'  > "$ENV_GOAL_DIR/task1.md"
@@ -798,6 +827,164 @@ assert_hook_err "undeterminable prompt still exports HOOK_NAME" 'HOOK_NAME=[befo
 assert_hook_err "undeterminable prompt leaves TASK_TITLE empty" 'TASK_TITLE=[]'
 assert_hook_err "undeterminable prompt leaves GOAL_SLUG empty"  'GOAL_SLUG=[]'
 
+# ------------------------------------------------------------------
+# activation-marker gate (stride-lite-hook.sh)
+# ------------------------------------------------------------------
+#
+# The hook runs a section only while the workflow skill is driving a goal,
+# which it signals with .stride-lite/.orchestrator_active. A missing, stale,
+# malformed or future-dated marker means "run nothing, exit 0" — it must never
+# block, because blocking would break the documented standalone dispatch of
+# stride-lite:task-explorer.
+#
+# Every fixture project above carries a fresh marker (written by
+# write_activation_marker), which is why those stages still exercise the real
+# sections. This stage removes and forges markers to pin the gate itself.
+
+echo ""
+echo "activation-marker gate (stride-lite-hook.sh)"
+
+MARKER_DIR="$SANDBOX/marker-gate"
+mkdir -p "$MARKER_DIR"
+cat > "$MARKER_DIR/.stride_lite.md" <<'CONFIG'
+## email
+
+hook-fixture@example.com
+
+## before_task
+
+```bash
+true
+```
+
+## after_task
+
+```bash
+true
+```
+
+## after_goal
+
+```bash
+true
+```
+CONFIG
+
+# run_hook_direct <phase> <project-dir> <payload> — as run_hook, but with the
+# STRIDE_LITE_ALLOW_DIRECT override set.
+run_hook_direct() {
+  local phase="$1" dir="$2" payload="$3"
+  local errfile
+  errfile="$(mktemp)"
+  HOOK_OUT="$(printf '%s' "$payload" \
+    | STRIDE_LITE_ALLOW_DIRECT=1 CLAUDE_PROJECT_DIR="$dir" bash "$HOOK_SH" "$phase" 2>"$errfile")"
+  HOOK_RC=$?
+  HOOK_ERR="$(cat "$errfile" 2>/dev/null)"
+  rm -f "$errfile"
+}
+
+# --- fresh marker: the section runs exactly as it does without the gate ---
+write_activation_marker "$MARKER_DIR"
+run_hook pre "$MARKER_DIR" "$EXPLORER_PAYLOAD"
+assert_eq "fresh marker: explorer dispatch exits 0" "$HOOK_RC" "0"
+assert_hook_out "fresh marker: before_task section runs" '"hook":"before_task","status":"success"'
+run_hook post "$MARKER_DIR" "$GOAL_WRITE_PAYLOAD"
+assert_eq "fresh marker: goal write exits 0" "$HOOK_RC" "0"
+assert_hook_out "fresh marker: after_goal section runs" '"hook":"after_goal","status":"success"'
+
+# --- no marker: blocking AND advisory triggers both run nothing, exit 0 ---
+rm -rf "$MARKER_DIR/.stride-lite"
+run_hook pre "$MARKER_DIR" "$EXPLORER_PAYLOAD"
+assert_eq "no marker: blocking trigger exits 0 (never blocks)" "$HOOK_RC" "0"
+assert_eq "no marker: blocking trigger runs nothing (empty stdout)" "$HOOK_OUT" ""
+run_hook pre "$MARKER_DIR" "$REVIEWER_PAYLOAD"
+assert_eq "no marker: after_task trigger exits 0" "$HOOK_RC" "0"
+assert_eq "no marker: after_task trigger runs nothing (empty stdout)" "$HOOK_OUT" ""
+run_hook post "$MARKER_DIR" "$GOAL_WRITE_PAYLOAD"
+assert_eq "no marker: advisory trigger exits 0" "$HOOK_RC" "0"
+assert_eq "no marker: advisory trigger runs nothing (empty stdout)" "$HOOK_OUT" ""
+
+# --- stale marker (5h > the 4h window): same as absent ---
+write_activation_marker "$MARKER_DIR" 18000
+run_hook pre "$MARKER_DIR" "$EXPLORER_PAYLOAD"
+assert_eq "stale marker: blocking trigger exits 0" "$HOOK_RC" "0"
+assert_eq "stale marker: blocking trigger runs nothing (empty stdout)" "$HOOK_OUT" ""
+run_hook post "$MARKER_DIR" "$GOAL_WRITE_PAYLOAD"
+assert_eq "stale marker: advisory trigger exits 0" "$HOOK_RC" "0"
+assert_eq "stale marker: advisory trigger runs nothing (empty stdout)" "$HOOK_OUT" ""
+
+# --- freshness-window boundary ---
+write_activation_marker "$MARKER_DIR" 14000
+run_hook pre "$MARKER_DIR" "$EXPLORER_PAYLOAD"
+assert_hook_out "marker just inside the 4h window still runs" '"hook":"before_task","status":"success"'
+write_activation_marker "$MARKER_DIR" 14500
+run_hook pre "$MARKER_DIR" "$EXPLORER_PAYLOAD"
+assert_eq "marker just outside the 4h window runs nothing" "$HOOK_OUT" ""
+
+# --- malformed marker: treated as absent, never an error ---
+mkdir -p "$MARKER_DIR/.stride-lite"
+printf 'not json at all\n' > "$MARKER_DIR/.stride-lite/.orchestrator_active"
+run_hook pre "$MARKER_DIR" "$EXPLORER_PAYLOAD"
+assert_eq "malformed marker exits 0" "$HOOK_RC" "0"
+assert_eq "malformed marker runs nothing (empty stdout)" "$HOOK_OUT" ""
+
+# --- future-dated marker (clock skew or forgery): treated as absent ---
+write_activation_marker "$MARKER_DIR" -18000
+run_hook pre "$MARKER_DIR" "$EXPLORER_PAYLOAD"
+assert_eq "future-dated marker exits 0" "$HOOK_RC" "0"
+assert_eq "future-dated marker runs nothing (empty stdout)" "$HOOK_OUT" ""
+
+# --- STRIDE_LITE_ALLOW_DIRECT=1 bypasses the gate entirely ---
+rm -rf "$MARKER_DIR/.stride-lite"
+run_hook_direct pre "$MARKER_DIR" "$EXPLORER_PAYLOAD"
+assert_hook_out "ALLOW_DIRECT runs the section with no marker at all" '"hook":"before_task","status":"success"'
+write_activation_marker "$MARKER_DIR" 18000
+run_hook_direct pre "$MARKER_DIR" "$EXPLORER_PAYLOAD"
+assert_hook_out "ALLOW_DIRECT runs the section despite a stale marker" '"hook":"before_task","status":"success"'
+run_hook_direct post "$MARKER_DIR" "$GOAL_WRITE_PAYLOAD"
+assert_hook_out "ALLOW_DIRECT applies to the advisory trigger too" '"hook":"after_goal","status":"success"'
+
+# --- the gate declines to ACT, it does not decline to proceed ---
+# $MARKER_FAIL_DIR's before_task is `false`. With a marker the hook exits 2 and
+# blocks the dispatch; with no marker it must exit 0 and stay silent. This is
+# the assertion that distinguishes "the gate suppressed the section" from "the
+# section ran and its failure was swallowed" — the all-`true` fixture above
+# cannot tell those apart. It pins the headline rule: a missing marker must
+# never block the documented standalone dispatch.
+MARKER_FAIL_DIR="$SANDBOX/marker-gate-fail"
+mkdir -p "$MARKER_FAIL_DIR"
+cp "$HOOK_FAIL_DIR/.stride_lite.md" "$MARKER_FAIL_DIR/.stride_lite.md"
+
+write_activation_marker "$MARKER_FAIL_DIR"
+run_hook pre "$MARKER_FAIL_DIR" "$EXPLORER_PAYLOAD"
+assert_eq "control: with a marker, a failing before_task still exits 2" "$HOOK_RC" "2"
+assert_hook_out "control: with a marker, the failure JSON is emitted" '"hook":"before_task","status":"failed"'
+
+rm -rf "$MARKER_FAIL_DIR/.stride-lite"
+run_hook pre "$MARKER_FAIL_DIR" "$EXPLORER_PAYLOAD"
+assert_eq "no marker: a FAILING before_task exits 0, never 2" "$HOOK_RC" "0"
+assert_eq "no marker: a failing before_task emits no failure JSON" "$HOOK_OUT" ""
+
+# --- degenerate marker contents are all treated as absent ---
+mkdir -p "$MARKER_DIR/.stride-lite"
+: > "$MARKER_DIR/.stride-lite/.orchestrator_active"
+run_hook pre "$MARKER_DIR" "$EXPLORER_PAYLOAD"
+assert_eq "empty marker file runs nothing" "$HOOK_OUT" ""
+printf '{"session_id":"x","pid":1}\n' > "$MARKER_DIR/.stride-lite/.orchestrator_active"
+run_hook pre "$MARKER_DIR" "$EXPLORER_PAYLOAD"
+assert_eq "marker with no started_at runs nothing" "$HOOK_OUT" ""
+
+# --- the override is =1, not merely "set" ---
+rm -rf "$MARKER_DIR/.stride-lite"
+HOOK_OUT="$(printf '%s' "$EXPLORER_PAYLOAD" \
+  | STRIDE_LITE_ALLOW_DIRECT=0 CLAUDE_PROJECT_DIR="$MARKER_DIR" bash "$HOOK_SH" pre 2>/dev/null)"
+assert_eq "STRIDE_LITE_ALLOW_DIRECT=0 does not bypass the gate" "$HOOK_OUT" ""
+
+# --- a non-trigger payload is still inert, marker or not ---
+write_activation_marker "$MARKER_DIR"
+run_hook pre "$MARKER_DIR" '{"tool_name":"Agent","tool_input":{"subagent_type":"general-purpose","prompt":"unrelated"}}'
+assert_eq "fresh marker does not make a non-trigger payload fire" "$HOOK_OUT" ""
+
 # --- cross-platform parity, part 1: the .sh and .ps1 export the same key set ---
 # Extracted from the real export call sites in both scripts, so the assertion
 # cannot pass while an implementation drifts. This pins the KEY SET only —
@@ -808,6 +995,20 @@ PS_ENV_KEYS="$(grep -oE "Set-StrideLiteEnvKv +-Key +'[A-Z_]+'" "$HOOK_PS1" \
   | grep -oE "'[A-Z_]+'" | tr -d "'" | sort -u)"
 assert_eq "hook env key set is identical in .sh and .ps1" "$PS_ENV_KEYS" "$SH_ENV_KEYS"
 assert_eq "hook env key set is the documented nine" "$SH_ENV_KEYS" "$EXPECTED_ENV_KEYS"
+
+# The .ps1 gate takes its project root as a PARAMETER, so the call site carries
+# the binding and the parity harness (which passes its own -ProjectRoot) cannot
+# see it. Drop the argument in the shipped script and $ProjectRoot defaults to
+# '' , trips the empty-root guard, and silently disarms every hook on Windows —
+# with the suite still green. Pin the real call site the same way the key-set
+# assertion above pins the real export call sites.
+if grep -qE 'Test-StrideLiteMarkerFresh +-ProjectRoot +\$ProjectDir' "$HOOK_PS1"; then
+  ok ".ps1 gate call site binds -ProjectRoot to \$ProjectDir"
+else
+  nope ".ps1 gate call site binds -ProjectRoot to \$ProjectDir" \
+    "a 'Test-StrideLiteMarkerFresh -ProjectRoot \$ProjectDir' call site" \
+    "$(grep -n 'Test-StrideLiteMarkerFresh' "$HOOK_PS1" | tr '\n' ' ')"
+fi
 
 # --- cross-platform parity, part 2: the .ps1 obeys the same RULES ---
 #
@@ -829,7 +1030,7 @@ assert_eq "hook env key set is the documented nine" "$SH_ENV_KEYS" "$EXPECTED_EN
 PS_PARITY_DIR="$SANDBOX/ps-parity"
 mkdir -p "$PS_PARITY_DIR"
 cat > "$PS_PARITY_DIR/harness.ps1" <<'PSHARNESS'
-param([string]$ScriptPath, [string]$ProjDir)
+param([string]$ScriptPath, [string]$ProjDir, [string]$MarkerProbeDir)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
@@ -885,6 +1086,41 @@ foreach ($s in $scenarios) {
     }
     [Console]::Out.WriteLine($s.label + ' ' + ($parts -join ' '))
 }
+
+# --- Activation-marker gate parity ---
+# Same states the bash gate stage pins, driven through the .ps1's own
+# Test-StrideLiteMarkerFresh (extracted above, not reimplemented here).
+# NOTE: deliberately no $MarkerMaxAgeSeconds here. The function takes its window
+# as a parameter with its own default, so the 14000/14500 boundary probes below
+# exercise the value that actually ships. Re-declaring it here would shadow it.
+$markerDir = Join-Path $MarkerProbeDir '.stride-lite'
+$markerFile = Join-Path $markerDir '.orchestrator_active'
+New-Item -ItemType Directory -Force -Path $markerDir | Out-Null
+
+function Write-ProbeMarker {
+    param([int]$SecondsAgo)
+    $stamp = [datetime]::UtcNow.AddSeconds(-$SecondsAgo).ToString('yyyy-MM-ddTHH:mm:ssZ')
+    Set-Content -LiteralPath $markerFile -Value ('{"session_id":"smoke","started_at":"' + $stamp + '","pid":1}') -NoNewline
+}
+
+Remove-Item -LiteralPath $markerFile -Force -ErrorAction SilentlyContinue
+[Console]::Out.WriteLine('marker-missing ' + (Test-StrideLiteMarkerFresh -ProjectRoot $MarkerProbeDir))
+Write-ProbeMarker -SecondsAgo 0
+[Console]::Out.WriteLine('marker-fresh ' + (Test-StrideLiteMarkerFresh -ProjectRoot $MarkerProbeDir))
+Write-ProbeMarker -SecondsAgo 18000
+[Console]::Out.WriteLine('marker-stale ' + (Test-StrideLiteMarkerFresh -ProjectRoot $MarkerProbeDir))
+Write-ProbeMarker -SecondsAgo 14000
+[Console]::Out.WriteLine('marker-inside-window ' + (Test-StrideLiteMarkerFresh -ProjectRoot $MarkerProbeDir))
+Write-ProbeMarker -SecondsAgo 14500
+[Console]::Out.WriteLine('marker-outside-window ' + (Test-StrideLiteMarkerFresh -ProjectRoot $MarkerProbeDir))
+Write-ProbeMarker -SecondsAgo -18000
+[Console]::Out.WriteLine('marker-future ' + (Test-StrideLiteMarkerFresh -ProjectRoot $MarkerProbeDir))
+Set-Content -LiteralPath $markerFile -Value 'not json at all'
+[Console]::Out.WriteLine('marker-malformed ' + (Test-StrideLiteMarkerFresh -ProjectRoot $MarkerProbeDir))
+$env:STRIDE_LITE_ALLOW_DIRECT = '1'
+Remove-Item -LiteralPath $markerFile -Force -ErrorAction SilentlyContinue
+[Console]::Out.WriteLine('marker-override ' + (Test-StrideLiteMarkerFresh -ProjectRoot $MarkerProbeDir))
+$env:STRIDE_LITE_ALLOW_DIRECT = ''
 PSHARNESS
 
 PS_BIN=""
@@ -899,8 +1135,11 @@ if [ -z "$PS_BIN" ]; then
   echo "  SKIP  .ps1 end-to-end via hooks/stride-lite-hook.ps1: blocked by the pre-existing"
   echo "        @(\$input) stdin defect, which predates this change"
 else
+  PS_MARKER_PROBE_DIR="$PS_PARITY_DIR/marker-probe"
+  mkdir -p "$PS_MARKER_PROBE_DIR"
   PS_PARITY_OUT="$("$PS_BIN" -NoProfile -File "$PS_PARITY_DIR/harness.ps1" \
-    -ScriptPath "$HOOK_PS1" -ProjDir "$HOOK_ENV_DIR" 2>/dev/null)"
+    -ScriptPath "$HOOK_PS1" -ProjDir "$HOOK_ENV_DIR" \
+    -MarkerProbeDir "$PS_MARKER_PROBE_DIR" 2>/dev/null)"
 
   # assert_ps_parity <label> <scenario-prefix> <marker>
   assert_ps_parity() {
@@ -926,6 +1165,16 @@ else
   assert_ps_parity ".ps1 after_goal derives GOAL_SLUG"      goal      'GOAL_SLUG=[add-notifs]'
   assert_ps_parity ".ps1 after_goal empties TASK_FILE"      goal      'TASK_FILE=[]'
   assert_ps_parity ".ps1 after_goal empties AGENT_NAME"     goal      'AGENT_NAME=[]'
+
+  # Activation-marker gate: the same states the bash gate stage pins above.
+  assert_ps_parity ".ps1 gate: missing marker is not fresh"        marker-missing        'False'
+  assert_ps_parity ".ps1 gate: fresh marker is fresh"              marker-fresh          'True'
+  assert_ps_parity ".ps1 gate: stale marker is not fresh"          marker-stale          'False'
+  assert_ps_parity ".ps1 gate: just inside the 4h window is fresh" marker-inside-window  'True'
+  assert_ps_parity ".ps1 gate: just outside the 4h window is not"  marker-outside-window 'False'
+  assert_ps_parity ".ps1 gate: future-dated marker is not fresh"   marker-future         'False'
+  assert_ps_parity ".ps1 gate: malformed marker is not fresh"      marker-malformed      'False'
+  assert_ps_parity ".ps1 gate: ALLOW_DIRECT bypasses entirely"     marker-override       'True'
 
   echo "  SKIP  .ps1 end-to-end via hooks/stride-lite-hook.ps1: blocked by the pre-existing"
   echo "        @(\$input) stdin defect, which predates this change"

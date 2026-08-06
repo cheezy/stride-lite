@@ -14,6 +14,12 @@ Thumbs.db
 .env.local
 *.local
 
-# Stride orchestrator marker (transient session state)
+# Full Stride plugin (which drives work in this checkout): its orchestrator
+# marker directory and its bearer-token auth file. Never committed.
 .stride/
 .stride_auth.md
+
+# stride-lite orchestrator activation marker (transient session state).
+# Deliberately NOT .stride/ — that directory belongs to the full Stride
+# plugin and a project may have both installed.
+.stride-lite/

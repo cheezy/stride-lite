@@ -4,17 +4,18 @@ Project guidelines for AI agents working **on** the Stride Lite plugin codebase 
 
 ## What this plugin is
 
-A Claude Code plugin that turns a free-text prompt plus an optional requirements directory into Stride-shaped markdown documents on disk, then drives those documents through a file-based task lifecycle. Three slash commands (`/stride-lite:create-goal`, `/stride-lite:create-task`, `/stride-lite:init`), four skills (the three create/init flows plus the v0.8.0 `stride-lite-workflow` orchestrator), three subagents (`create-decomposer`, `task-explorer`, `task-reviewer`), four `lib/` helpers, a `hooks/` enforcement layer (added v0.9.0 — `hooks.json` + `stride-lite-hook.sh` + `stride-lite-hook.ps1`) registered with Claude Code's PreToolUse/PostToolUse harness so the three `.stride_lite.md` hooks auto-fire at the right lifecycle intercept points, each with a derived `HOOK_NAME` / `TASK_*` / `GOAL_*` / `AGENT_NAME` environment block exported into every command it runs, and zero API calls. The create/init flows are bounded scaffolders; the workflow skill runs an eight-step loop (next task → before_task hook (auto-fired pre-explorer-dispatch) → explorer → implement → after_task hook (auto-fired pre-reviewer-dispatch) → reviewer → review-loop → completion summary → after_goal hook (auto-fired on the goal.md write) on final task). There is no kanban server, no claim/complete loop — the `.stride_lite.md` hooks ARE executed (by the harness, v0.9.0+) but everything happens locally against the file tree.
+A Claude Code plugin that turns a free-text prompt plus an optional requirements directory into Stride-shaped markdown documents on disk, then drives those documents through a file-based task lifecycle. Three slash commands (`/stride-lite:create-goal`, `/stride-lite:create-task`, `/stride-lite:init`), four skills (the three create/init flows plus the v0.8.0 `stride-lite-workflow` orchestrator), three subagents (`create-decomposer`, `task-explorer`, `task-reviewer`), four `lib/` helpers, a `hooks/` enforcement layer (added v0.9.0 — `hooks.json` + `stride-lite-hook.sh` + `stride-lite-hook.ps1`) registered with Claude Code's PreToolUse/PostToolUse harness so the three `.stride_lite.md` hooks auto-fire at the right lifecycle intercept points — but only while the workflow skill is actually driving a goal, which it signals with an activation marker at `.stride-lite/.orchestrator_active`; a standalone agent dispatch finds no fresh marker and fires nothing. Each command the hooks do run receives a derived `HOOK_NAME` / `TASK_*` / `GOAL_*` / `AGENT_NAME` environment block, and there are zero API calls. The create/init flows are bounded scaffolders; the workflow skill runs an eight-step loop (next task → before_task hook (auto-fired pre-explorer-dispatch) → explorer → implement → after_task hook (auto-fired pre-reviewer-dispatch) → reviewer → review-loop → completion summary → after_goal hook (auto-fired on the goal.md write) on final task). There is no kanban server, no claim/complete loop — the `.stride_lite.md` hooks ARE executed (by the harness, v0.9.0+) but everything happens locally against the file tree.
 
 ## Repository layout
 
 ```
 stride-lite/
+  .gitignore                    ← ignores .stride/ + .stride_auth.md (the full Stride plugin, which drives work in this checkout) and .stride-lite/
   .claude-plugin/plugin.json    ← plugin manifest (name, version, license)
   hooks/
     hooks.json                  ← Claude Code PreToolUse/PostToolUse handler registration (cross-platform)
-    stride-lite-hook.sh         ← bash executor for macOS/Linux (delegates to .ps1 on native Windows; derives and exports the hook env block)
-    stride-lite-hook.ps1        ← PowerShell executor for Windows (behavior-equivalent to .sh, including the exported env key set)
+    stride-lite-hook.sh         ← bash executor for macOS/Linux (delegates to .ps1 on native Windows; gates on the activation marker, derives and exports the hook env block)
+    stride-lite-hook.ps1        ← PowerShell executor for Windows (behavior-equivalent to .sh, including the marker gate and the exported env key set)
   commands/
     create-goal.md              ← /stride-lite:create-goal slash command shell
     create-task.md              ← /stride-lite:create-task slash command shell
@@ -38,6 +39,11 @@ stride-lite/
   LICENSE                       ← MIT
 ```
 
+**Artifacts written into the *user's* project (never shipped, never committed):**
+
+- `.stride_lite.md` — the config file `/stride-lite:init` scaffolds; the hook scripts read its three sections.
+- `.stride-lite/.orchestrator_active` — the workflow's activation marker. Written once at goal-drive start, cleared on every exit path, and gitignored. Single-line JSON with `session_id` / `started_at` / `pid`; the hook scripts run a section only when `started_at` is within 4 hours. It is a **coordination** signal between the skill and the hook scripts — any local process can write it, so nothing may ever depend on it for authorization. Deliberately not `.stride/`: that belongs to the full Stride plugin, and a project may have both installed.
+
 All `lib/*.md` files document a single pure helper with a Contract table, Spec/Rules, Reference Implementation (bash), Examples, and Edge Cases. The reference implementations are normative — when you ship a runtime that needs an executable helper, transliterate the bash from these docs without renaming functions or changing the exit-code semantics.
 
 ## Module boundaries
@@ -58,6 +64,7 @@ When extending the plugin, add new helpers under `lib/`, new agents under `agent
   - `docs/implementation/IMPLEMENTED` (the archive location populated by `stride-lite-workflow`'s terminal PENDING→IMPLEMENTED move at goal close-out, added in v0.10.0). Both `--output-dir` and the archive base must move together if either changes; otherwise the workflow's `/PENDING/` substring substitution breaks silently.
 - **Never diverge the task markdown template** between `stride-lite-create-goal/SKILL.md` and `stride-lite-create-task/SKILL.md`. The two skills MUST render task markdown identically. The template is reproduced verbatim in both files so divergence is visible in code review.
 - **Never raise the plugin version** without a matching CHANGELOG entry and a plugin.json bump in the same commit.
+- **Never write to `.stride/` from stride-lite, and never treat the activation marker as authorization.** `.stride/` is the full Stride plugin's directory; stride-lite owns `.stride-lite/` only, and a project may have both plugins installed. The marker gates *whether a hook fires* — it is forgeable by any local process and must never gate anything that matters for security.
 - **Never list more than 8 child tasks in a goal.** The `create-decomposer` agent enforces this cap; downstream tools (the surface skills) reject decomposer output that violates it.
 
 ## Adding a new helper to `lib/`

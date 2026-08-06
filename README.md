@@ -128,6 +128,8 @@ Invoke it via Claude Code's `Agent` tool with `subagent_type: stride-lite:task-e
 Dispatch stride-lite:task-explorer on docs/implementation/PENDING/add-notifications/task1.md
 ```
 
+**Hooks do not fire on a hand-run dispatch.** Your `.stride_lite.md` `## before_task` section runs only while `stride-lite-workflow` is driving a goal — see [Cross-platform hook enforcement](#cross-platform-hook-enforcement-v090). The dispatch itself proceeds normally.
+
 After it runs, the input file gains a new `## Exploration Report` section at the bottom containing File state per key_file, Pattern matches, Related tests, and Implementation notes. All prior sections of the task file (Description, Why, What, Where, Acceptance criteria, etc.) remain byte-equivalent to the pre-run state.
 
 **Re-runs replace in place.** Dispatching the agent a second time against the same file does NOT append a duplicate section or use a numeric discriminator like `## Exploration Report 2` — it slices from the existing `## Exploration Report` heading through EOF and overwrites with the freshly-generated content. The contract assumes the report is always the last section in the file; if you've manually added content below it after a prior run, the agent will refuse to mutate and surface a clear error.
@@ -141,6 +143,8 @@ Invoke it via Claude Code's `Agent` tool with `subagent_type: stride-lite:task-r
 ```
 Dispatch stride-lite:task-reviewer on docs/implementation/PENDING/add-notifications/task1.md
 ```
+
+**Hooks do not fire on a hand-run dispatch.** Your `.stride_lite.md` `## after_task` section runs only while `stride-lite-workflow` is driving a goal — see [Cross-platform hook enforcement](#cross-platform-hook-enforcement-v090). The dispatch itself proceeds normally.
 
 After it runs, the input file gains a new `## Review Report` section at the bottom. All prior sections remain byte-equivalent.
 
@@ -165,6 +169,12 @@ Added in **v0.8.0** and hardened with harness-enforced hook execution in **v0.9.
 | Step 8 final-task goal.md write | PostToolUse | `Edit` or `Write` | file path ends in `goal.md` AND body contains `## Completion Summary` | `## after_goal` | no (advisory — PostToolUse cannot roll back the write) |
 
 On native Windows (no `OSTYPE`, `COMSPEC` set), `stride-lite-hook.sh` delegates to the behavior-equivalent `stride-lite-hook.ps1` (PowerShell 5.1+). Both scripts read `.stride_lite.md`, parse the first fenced ` ```bash ... ``` ` block under the named section, and execute each line one at a time — silently no-oping on missing file / missing section / empty block.
+
+**Hooks fire only inside a workflow run.** The `stride-lite-workflow` skill writes an activation marker at `.stride-lite/.orchestrator_active` when it starts driving a goal and clears it on every exit path. The hook scripts check for a *fresh* marker (written within the last 4 hours) before running any section; with no marker, a stale one, or an unreadable one they run nothing and exit 0.
+
+That is what keeps a **standalone** dispatch inert. Dispatching `stride-lite:task-explorer` or `stride-lite:task-reviewer` against a single task file by hand — which this README documents as a supported way to use the subagents — no longer fires your `before_task` / `after_task` commands, so your test suite does not run behind your back. The dispatch itself always proceeds: a missing marker makes the hook decline to *act*, never to let the call through.
+
+The marker is a **coordination mechanism, not a security boundary** — any local process can write it, so nothing should rely on it for authorization. Set `STRIDE_LITE_ALLOW_DIRECT=1` to bypass the gate entirely when debugging or in CI; no shipped file sets it.
 
 **Injected environment.** Each hook command runs with `HOOK_NAME`, `TASK_FILE`, `TASK_NUMBER`, `TASK_TITLE`, `GOAL_DIR`, `GOAL_FILE`, `GOAL_SLUG`, `GOAL_TITLE` and `AGENT_NAME` exported into its environment, derived from the task and goal markdown the hook was fired against — there is no server, so nothing is fetched. `before_task` and `after_task` carry the full set; `after_goal` carries the `GOAL_*` keys and leaves the `TASK_*` keys and `AGENT_NAME` empty, because it is a goal-level event with no single task or agent dispatch behind it. Anything the executor cannot derive is exported as the empty string rather than raising an error, and paths resolving outside the project directory are refused. Values are exported, never interpolated into the command text, so a task title containing shell metacharacters is inert data. Both scripts export the identical key set under the identical rules: `test/smoke.sh` diffs the key set out of each script's real call sites, and — where PowerShell is available — drives the `.ps1`'s own derivation functions through the same fixtures as the bash stage to check the rules match.
 
@@ -226,7 +236,7 @@ The terminal PENDING → IMPLEMENTED move (added in **v0.10.0**) is performed by
 ## What this plugin does NOT do
 
 - **No Stride API calls.** Stride Lite writes markdown to disk. It does not POST, claim, complete, or interact with any kanban server.
-- **No `.stride_auth.md` or `.stride.md` required.** Those files are for the full Stride plugin. Stride Lite needs neither.
+- **No `.stride_auth.md` or `.stride.md` required.** Those files are for the full Stride plugin. Stride Lite needs neither, and it never reads or writes `.stride/` — its own activation marker lives in `.stride-lite/`, so both plugins can be installed in one project.
 - **No server-mediated lifecycle.** The full Stride plugin runs `.stride.md` hooks against a kanban server lifecycle (claim → doing → review → done). Stride Lite has no server interaction — but as of v0.9.0 the `hooks/` enforcement layer auto-fires the three `.stride_lite.md` hooks (`before_task`, `after_task`, `after_goal`) directly from Claude Code's PreToolUse/PostToolUse harness at the corresponding intercept points in the workflow skill's file-based loop.
 - **No marketplace, no Codex/Cursor/Continue support currently.** Claude Code only, manual install only. Multi-harness support and a marketplace listing are slated for later releases.
 

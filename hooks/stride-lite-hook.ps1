@@ -23,10 +23,15 @@ param(
 #   0 — success, no-op, or non-trigger
 #   2 — blocking PreToolUse failure (only meaningful for pre + before_task/after_task)
 #
+# Sections run only while the stride-lite-workflow orchestrator is driving a goal,
+# which it signals by writing .stride-lite/.orchestrator_active. Without a fresh
+# marker this script runs nothing and exits 0. STRIDE_LITE_ALLOW_DIRECT=1 bypasses.
+#
 # Cross-platform parity contract: this script and stride-lite-hook.sh MUST detect
-# the same three trigger conditions, produce equivalent single-line JSON results
-# for the same input, export the same environment key set under the same
-# empty-on-underivable rule, and apply the same exit-code contract.
+# the same three trigger conditions, apply the same activation-marker gate and
+# freshness window, produce equivalent single-line JSON results for the same
+# input, export the same environment key set under the same empty-on-underivable
+# rule, and apply the same exit-code contract.
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -107,6 +112,70 @@ switch ($Phase) {
 }
 
 if (-not $HookName) { exit 0 }
+
+# --- Orchestrator activation marker ---
+# The workflow skill writes .stride-lite/.orchestrator_active when it starts a
+# goal drive and clears it on every exit path. Without a fresh marker the
+# trigger is a standalone dispatch — someone running stride-lite:task-explorer
+# against a single task file by hand — and firing the user's before_task
+# section there would run their test suite behind their back.
+#
+# A missing, malformed or stale marker means "run nothing, exit 0". It NEVER
+# blocks: blocking a standalone dispatch would break the documented manual
+# workflow, so the gate declines to act rather than declining to proceed.
+#
+# This is a COORDINATION mechanism, not a security boundary. Any local process
+# can write the file; nothing may rely on it for authorization.
+#
+# Identical rules and window to stride-lite-hook.sh, per the parity contract.
+# Parameterized rather than closing over script scope so test/smoke.sh's AST
+# harness can drive it directly — and so the 4-hour window is pinned by the
+# extracted function text instead of being re-declared, and thereby shadowed,
+# by the harness. A dot-sourced function resolves free variables from the
+# CALLING scope, so a script-scope $MarkerMaxAgeSeconds would make the window
+# untestable: changing it here would leave every parity assertion green.
+function Test-StrideLiteMarkerFresh {
+    param(
+        [string]$ProjectRoot = '',
+        [int]$MaxAgeSeconds = 14400   # 4 hours, matching stride-lite-hook.sh
+    )
+    if ($env:STRIDE_LITE_ALLOW_DIRECT -eq '1') { return $true }
+    try {
+        if (-not $ProjectRoot) { return $false }
+        $markerPath = Join-Path (Join-Path $ProjectRoot '.stride-lite') '.orchestrator_active'
+        if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf)) { return $false }
+
+        $content = Get-Content -LiteralPath $markerPath -Raw -Encoding UTF8 -ErrorAction Stop
+        if (-not $content) { return $false }
+
+        $started = ''
+        try {
+            $markerObj = $content | ConvertFrom-Json
+            if ($markerObj.PSObject.Properties.Name -contains 'started_at') {
+                $started = [string]$markerObj.started_at
+            }
+        } catch {
+            if ($content -match '"started_at"\s*:\s*"([^"]*)"') { $started = $Matches[1] }
+        }
+        if (-not $started) { return $false }
+
+        $startedDt = [datetime]::Parse(
+            $started,
+            [System.Globalization.CultureInfo]::InvariantCulture,
+            [System.Globalization.DateTimeStyles]::AdjustToUniversal -bor
+                [System.Globalization.DateTimeStyles]::AssumeUniversal)
+
+        $age = ([datetime]::UtcNow - $startedDt).TotalSeconds
+        # A negative age means a future timestamp (clock skew or a forged marker).
+        return ($age -ge 0 -and $age -le $MaxAgeSeconds)
+    } catch {
+        return $false
+    }
+}
+
+# Gate BEFORE deriving the environment: a run we are not going to perform should
+# not read the user's task or goal markdown either.
+if (-not (Test-StrideLiteMarkerFresh -ProjectRoot $ProjectDir)) { exit 0 }
 
 # --- Derived hook environment (stride-lite native) ---
 # stride-lite has no server, so there is no `hook.env` block to forward. The
