@@ -77,6 +77,12 @@ cp -a "$SRC_DIR/skills" "$TARGET_DIR/"
 cp -a "$SRC_DIR/agents" "$TARGET_DIR/"
 cp -a "$SRC_DIR/lib" "$TARGET_DIR/"
 cp -a "$SRC_DIR/hooks" "$TARGET_DIR/"
+# The hook test suites live beside the executors they test, so the wholesale
+# copy above brings them along. They have no runtime purpose in an installed
+# plugin -- remove them rather than shipping dead weight a user has to wonder
+# about. The "Hooks:" count below globs stride-lite-hook.* and never matched
+# them anyway, so the summary was accurate either way; this is about the files.
+rm -f "$TARGET_DIR/hooks"/test-stride-lite-hook.*
 cp -a "$SRC_DIR/README.md" "$TARGET_DIR/"
 cp -a "$SRC_DIR/AGENTS.md" "$TARGET_DIR/"
 cp -a "$SRC_DIR/LICENSE" "$TARGET_DIR/"

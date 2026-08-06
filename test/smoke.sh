@@ -2277,6 +2277,98 @@ for _name in exploratory harden; do
 done
 
 echo ""
+echo "the dedicated hook test suites"
+
+# ---------------------------------------------------------------------------
+# These assert that the suites EXIST, are wired, and do not overlap this file.
+# They deliberately do not re-run them: this suite covers the hook script's
+# surface (routing, exit codes, env injection through real subprocess runs) and
+# the dedicated suites cover each function's own edge cases. Two copies of one
+# assertion rot in opposite directions, which is what AC7 is guarding against.
+# ---------------------------------------------------------------------------
+HS_SH="$REPO_ROOT/hooks/test-stride-lite-hook.sh"
+HS_PS1="$REPO_ROOT/hooks/test-stride-lite-hook.ps1"
+for _p in "$HS_SH" "$HS_PS1"; do
+  if [ -s "$_p" ]; then
+    ok "$(basename "$_p") exists and is non-empty"
+  else
+    nope "$(basename "$_p") exists and is non-empty" "a suite file" "missing or empty"
+  fi
+done
+assert_eq "the bash hook suite parses" "$(bash -n "$HS_SH" 2>&1 | grep -c .)" "0"
+# Both must be executable, or the README's documented invocation is the only way
+# to run them and a `./hooks/test-...` fails confusingly.
+for _p in "$HS_SH" "$HS_PS1"; do
+  [ -x "$_p" ] && ok "$(basename "$_p") is executable" \
+                || nope "$(basename "$_p") is executable" "mode +x" "not executable"
+done
+
+# The division of labour has to be stated somewhere a reader will find it, or
+# the next person duplicates a case in whichever file they opened first.
+assert_has "the bash suite states why it does not repeat smoke.sh" "$HS_SH" \
+    "be a byte-for-byte duplicate, and two copies of one assertion rot"
+assert_has "the PowerShell suite states why it cannot run end to end" "$HS_PS1" \
+    "an OS-level pipe (defect D215)"
+# The split is deliberate and asymmetric, so it has to be legible from either
+# file. Without the map, the next reader adds a case to whichever they opened.
+assert_has "the bash suite maps every subject to the file that owns it" "$HS_SH" \
+    "WHERE EACH SUBJECT LIVES"
+assert_has "the bash suite says why the smoke cases were not moved" "$HS_SH" \
+    "would replace a stronger metacharacter case"
+# A known divergence recorded as a skip is honest; one silently asserted as
+# correct is not. Pin that D218 is named rather than papered over.
+assert_has "the bash suite records the D218 divergence rather than hiding it" "$HS_SH" \
+    "D218"
+assert_has "the PowerShell suite records D218 too" "$HS_PS1" "D218"
+# The confinement claim has to be checkable from a path containing a space, and
+# setting TMPDIR does not achieve that: BSD `mktemp -d` with no template ignores
+# it, so a "green under a spaced TMPDIR" run proves nothing on macOS.
+assert_has "the bash suite can be pointed at a sandbox base for the spaced-path check" "$HS_SH" \
+    "STRIDE_LITE_TEST_SANDBOX_BASE"
+assert_has "the suite says why TMPDIR alone would not prove confinement" "$HS_SH" \
+    "ignores TMPDIR, so setting TMPDIR alone silently proves nothing"
+# The D218 fixture must not interpolate a path into a shell redirect -- that is
+# how it escaped the sandbox the first time.
+assert_eq "no fixture interpolates a sandbox path into a redirect" \
+  "$(grep -c 'echo ran > %s' "$HS_SH")" "0"
+
+# The non-duplication claim, checked rather than asserted in prose: this file
+# must not reach into run_stride_lite_section's internals, and the dedicated
+# suite must not re-drive the routing table this file owns.
+assert_eq "smoke.sh does not source the hook script" \
+  "$(grep -cE '^[[:space:]]*(\.|source) .*stride-lite-hook\.sh' "$0")" "0"
+HS_SH_FLAT="$SANDBOX/hook-suite-flat.txt"
+tr '\n' ' ' < "$HS_SH" > "$HS_SH_FLAT"
+if [ -s "$HS_SH_FLAT" ]; then
+  ok "the flattened hook-suite copy extracted non-empty"
+else
+  nope "the flattened hook-suite copy extracted non-empty" "content" "(empty)"
+fi
+assert_eq "the dedicated suite does not re-assert the routing table" \
+  "$(grep -oE 'subagent_type.{0,200}(before_task|after_task)|goal\.md.{0,200}Completion Summary' "$HS_SH_FLAT" | grep -c . || true)" "0"
+# ...and the negative-payload shapes stay smoke.sh's too.
+assert_eq "the dedicated suite does not re-assert the non-matching payloads" \
+  "$(grep -cE 'task-enricher|general-purpose' "$HS_SH")" "0"
+
+# The README must document both, or a suite nobody knows to run is a suite that
+# does not run.
+assert_has "the README documents the bash suite" "$XT_README" \
+    "bash hooks/test-stride-lite-hook.sh"
+assert_has "the README documents the PowerShell suite" "$XT_README" \
+    "pwsh hooks/test-stride-lite-hook.ps1"
+assert_has "the README explains the division of labour" "$XT_README" \
+    "Neither re-asserts the other's cases"
+# A silent skip is indistinguishable from a pass, which is the whole reason the
+# suites report one with a reason.
+assert_has "the README says an absent PowerShell reports a skip" "$XT_README" \
+    "SKIP with a reason"
+
+# install.sh copies hooks/ wholesale, so without an explicit removal the suites
+# ship into every installed plugin as dead weight.
+assert_has "install.sh does not ship the test suites" "$REPO_ROOT/install.sh" \
+    "rm -f \"\$TARGET_DIR/hooks\"/test-stride-lite-hook."
+
+echo ""
 echo "anti-rationalization scaffolding"
 
 # ---------------------------------------------------------------------------

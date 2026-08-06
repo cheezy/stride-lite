@@ -291,6 +291,40 @@ The terminal PENDING → IMPLEMENTED move (added in **v0.10.0**) is performed by
 - **No server-mediated lifecycle.** The full Stride plugin runs `.stride.md` hooks against a kanban server lifecycle (claim → doing → review → done). Stride Lite has no server interaction — but as of v0.9.0 the `hooks/` enforcement layer auto-fires the three `.stride_lite.md` hooks (`before_task`, `after_task`, `after_goal`) directly from Claude Code's PreToolUse/PostToolUse harness at the corresponding intercept points in the workflow skill's file-based loop.
 - **No marketplace, no Codex/Cursor/Continue support currently.** Claude Code only, manual install only. Multi-harness support and a marketplace listing are slated for later releases.
 
+## Running the hook test suites
+
+The hook scripts ship with dedicated test suites covering the section executor,
+the derived environment, the two structured JSON shapes and the activation-marker
+gate:
+
+```
+bash hooks/test-stride-lite-hook.sh
+pwsh hooks/test-stride-lite-hook.ps1
+```
+
+Both run with no setup, touch nothing outside a temporary sandbox, and make no
+network requests. Each exits non-zero if any assertion fails and prints the
+failing case.
+
+The bash suite's cross-platform stage runs the same fixtures through both
+executors and compares the emitted JSON. Where neither `pwsh` nor `powershell`
+is on `PATH` it reports a **SKIP with a reason** rather than passing silently, so
+an absent run is never mistaken for a passing one. The PowerShell suite skips its
+section-executor cases the same way when `bash` is absent, since the `.ps1` runs
+each `.stride_lite.md` command through `bash`.
+
+These are separate from `test/smoke.sh`, which covers the plugin's surface —
+templates, agent contracts, the workflow skill, and the hook script's routing and
+env injection through full subprocess runs:
+
+```
+bash test/smoke.sh
+```
+
+The division is deliberate: `test/smoke.sh` owns whether the script routes and
+exports correctly end to end; the hook suites own whether each function handles
+its own edge cases. Neither re-asserts the other's cases.
+
 ## License
 
 MIT — see [LICENSE](LICENSE) for details.

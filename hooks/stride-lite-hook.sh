@@ -412,6 +412,15 @@ _derive_hook_env() {
 #   2 — first command failed; structured failure JSON emitted on stdout
 run_stride_lite_section() {
   local _section="$1"
+  # The main flow already refuses a missing .stride_lite.md before reaching
+  # here, so this guard is unreachable in production. It exists because the
+  # header sanctions sourcing this script and calling this function in
+  # isolation, and without it a direct call redirects from a file that does not
+  # exist -- a shell error on stderr rather than the documented no-op. A
+  # function that reads a file should handle it being absent.
+  if [ ! -f "$STRIDE_LITE_MD" ] || [ ! -r "$STRIDE_LITE_MD" ]; then
+    return 0
+  fi
   local _commands=""
   local _found=0
   local _capture=0
