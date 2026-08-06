@@ -166,6 +166,16 @@ Added in **v0.8.0** and hardened with harness-enforced hook execution in **v0.9.
 
 On native Windows (no `OSTYPE`, `COMSPEC` set), `stride-lite-hook.sh` delegates to the behavior-equivalent `stride-lite-hook.ps1` (PowerShell 5.1+). Both scripts read `.stride_lite.md`, parse the first fenced ` ```bash ... ``` ` block under the named section, and execute each line one at a time — silently no-oping on missing file / missing section / empty block.
 
+**Injected environment.** Each hook command runs with `HOOK_NAME`, `TASK_FILE`, `TASK_NUMBER`, `TASK_TITLE`, `GOAL_DIR`, `GOAL_FILE`, `GOAL_SLUG`, `GOAL_TITLE` and `AGENT_NAME` exported into its environment, derived from the task and goal markdown the hook was fired against — there is no server, so nothing is fetched. `before_task` and `after_task` carry the full set; `after_goal` carries the `GOAL_*` keys and leaves the `TASK_*` keys and `AGENT_NAME` empty, because it is a goal-level event with no single task or agent dispatch behind it. Anything the executor cannot derive is exported as the empty string rather than raising an error, and paths resolving outside the project directory are refused. Values are exported, never interpolated into the command text, so a task title containing shell metacharacters is inert data. Both scripts export the identical key set under the identical rules: `test/smoke.sh` diffs the key set out of each script's real call sites, and — where PowerShell is available — drives the `.ps1`'s own derivation functions through the same fixtures as the bash stage to check the rules match.
+
+````markdown
+## after_task
+
+```bash
+echo "Finished task $TASK_NUMBER of $GOAL_SLUG: $TASK_TITLE"
+```
+````
+
 Invoke it via Claude Code's Skill tool with the goal-directory path as input:
 
 ```

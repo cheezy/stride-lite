@@ -83,20 +83,22 @@ Open the file and fill in the four sections:
   - ## after_goal — the shell commands you want to run when the final task in a goal completes (auto-fired by the Claude Code harness after the goal-level Completion Summary is written; advisory)
 
 The hook sections are executed automatically by the Claude Code harness via the plugin's hooks.json at the corresponding lifecycle points (v0.9.0+). The format mirrors the full Stride plugin's .stride.md so your snippets transfer across plugins.
+
+Each hook command receives the task/goal context as environment variables: HOOK_NAME, TASK_FILE, TASK_NUMBER, TASK_TITLE, GOAL_DIR, GOAL_FILE, GOAL_SLUG, GOAL_TITLE and AGENT_NAME. Anything that cannot be derived is exported as the empty string, never an error.
 ```
 
 That is the entire stdout output. The skill does not chain into any follow-up command.
 
 ## Canonical template
 
-The skill writes this exact text to `./.stride_lite.md`. Keep the section order and the empty fenced bash blocks byte-equivalent to the format used by the full Stride plugin's `.stride.md` — that mental-model transfer is the reason for the empty-bash-block shape.
+The skill writes this exact text to `./.stride_lite.md`. Keep the section order and the command-free fenced bash blocks byte-equivalent to the format used by the full Stride plugin's `.stride.md` — that mental-model transfer is the reason for the empty-bash-block shape. The two lines in the `## after_task` block are comments, which the executor strips before running anything, so every section still scaffolds as a clean no-op; they exist so the injected variables are discoverable at the moment the user opens the file to fill it in.
 
 ````markdown
 # Stride Lite Configuration
 
 This file is created by `/stride-lite:init`. Fill in the fields below.
 
-**Note (v0.9.0+):** The hook sections are executed automatically by the Claude Code harness via the plugin's `hooks.json` at the corresponding lifecycle points (`before_task` before each task-explorer dispatch and `after_task` before each task-reviewer dispatch, both blocking — exit 2 stops the dispatch; `after_goal` after the goal-level Completion Summary is written, advisory). The format mirrors the full Stride plugin's `.stride.md` so your snippets transfer across plugins.
+**Note (v0.9.0+):** The hook sections are executed automatically by the Claude Code harness via the plugin's `hooks.json` at the corresponding lifecycle points (`before_task` before each task-explorer dispatch and `after_task` before each task-reviewer dispatch, both blocking — exit 2 stops the dispatch; `after_goal` after the goal-level Completion Summary is written, advisory). The format mirrors the full Stride plugin's `.stride.md` so your snippets transfer across plugins. Each hook command also receives the task/goal context as environment variables — `HOOK_NAME`, `TASK_FILE`, `TASK_NUMBER`, `TASK_TITLE`, `GOAL_DIR`, `GOAL_FILE`, `GOAL_SLUG`, `GOAL_TITLE` and `AGENT_NAME` — each exported as the empty string when it cannot be derived.
 
 ## email
 
@@ -110,6 +112,8 @@ your-email@example.com
 ## after_task
 
 ```bash
+# Available here: HOOK_NAME TASK_FILE TASK_NUMBER TASK_TITLE GOAL_DIR GOAL_FILE GOAL_SLUG GOAL_TITLE AGENT_NAME
+# echo "Finished task $TASK_NUMBER of $GOAL_SLUG: $TASK_TITLE"
 ```
 
 ## after_goal

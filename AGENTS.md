@@ -4,7 +4,7 @@ Project guidelines for AI agents working **on** the Stride Lite plugin codebase 
 
 ## What this plugin is
 
-A Claude Code plugin that turns a free-text prompt plus an optional requirements directory into Stride-shaped markdown documents on disk, then drives those documents through a file-based task lifecycle. Three slash commands (`/stride-lite:create-goal`, `/stride-lite:create-task`, `/stride-lite:init`), four skills (the three create/init flows plus the v0.8.0 `stride-lite-workflow` orchestrator), three subagents (`create-decomposer`, `task-explorer`, `task-reviewer`), four `lib/` helpers, a `hooks/` enforcement layer (added v0.9.0 — `hooks.json` + `stride-lite-hook.sh` + `stride-lite-hook.ps1`) registered with Claude Code's PreToolUse/PostToolUse harness so the three `.stride_lite.md` hooks auto-fire at the right lifecycle intercept points, and zero API calls. The create/init flows are bounded scaffolders; the workflow skill runs an eight-step loop (next task → before_task hook (auto-fired pre-explorer-dispatch) → explorer → implement → after_task hook (auto-fired pre-reviewer-dispatch) → reviewer → review-loop → completion summary → after_goal hook (auto-fired on the goal.md write) on final task). There is no kanban server, no claim/complete loop — the `.stride_lite.md` hooks ARE executed (by the harness, v0.9.0+) but everything happens locally against the file tree.
+A Claude Code plugin that turns a free-text prompt plus an optional requirements directory into Stride-shaped markdown documents on disk, then drives those documents through a file-based task lifecycle. Three slash commands (`/stride-lite:create-goal`, `/stride-lite:create-task`, `/stride-lite:init`), four skills (the three create/init flows plus the v0.8.0 `stride-lite-workflow` orchestrator), three subagents (`create-decomposer`, `task-explorer`, `task-reviewer`), four `lib/` helpers, a `hooks/` enforcement layer (added v0.9.0 — `hooks.json` + `stride-lite-hook.sh` + `stride-lite-hook.ps1`) registered with Claude Code's PreToolUse/PostToolUse harness so the three `.stride_lite.md` hooks auto-fire at the right lifecycle intercept points, each with a derived `HOOK_NAME` / `TASK_*` / `GOAL_*` / `AGENT_NAME` environment block exported into every command it runs, and zero API calls. The create/init flows are bounded scaffolders; the workflow skill runs an eight-step loop (next task → before_task hook (auto-fired pre-explorer-dispatch) → explorer → implement → after_task hook (auto-fired pre-reviewer-dispatch) → reviewer → review-loop → completion summary → after_goal hook (auto-fired on the goal.md write) on final task). There is no kanban server, no claim/complete loop — the `.stride_lite.md` hooks ARE executed (by the harness, v0.9.0+) but everything happens locally against the file tree.
 
 ## Repository layout
 
@@ -13,8 +13,8 @@ stride-lite/
   .claude-plugin/plugin.json    ← plugin manifest (name, version, license)
   hooks/
     hooks.json                  ← Claude Code PreToolUse/PostToolUse handler registration (cross-platform)
-    stride-lite-hook.sh         ← bash executor for macOS/Linux (delegates to .ps1 on native Windows)
-    stride-lite-hook.ps1        ← PowerShell executor for Windows (behavior-equivalent to .sh)
+    stride-lite-hook.sh         ← bash executor for macOS/Linux (delegates to .ps1 on native Windows; derives and exports the hook env block)
+    stride-lite-hook.ps1        ← PowerShell executor for Windows (behavior-equivalent to .sh, including the exported env key set)
   commands/
     create-goal.md              ← /stride-lite:create-goal slash command shell
     create-task.md              ← /stride-lite:create-task slash command shell

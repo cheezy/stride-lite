@@ -189,10 +189,44 @@ For each trigger, the hook executor:
 
 1. Locates `.stride_lite.md` via `$CLAUDE_PROJECT_DIR` (falls back to the current directory).
 2. Parses the named `## <section>` heading and the first fenced ` ```bash ... ``` ` block under it.
-3. Executes each non-empty, non-comment line one at a time. On the first non-zero exit it stops and emits a structured failure JSON on stdout (`hook`, `status: "failed"`, `failed_command`, `command_index`, `exit_code`, `stdout`, `stderr`, `commands_completed`, `commands_remaining`); on all-success it emits a structured success JSON (`hook`, `status: "success"`, `commands_completed`, `duration_seconds`).
-4. Missing `.stride_lite.md`, missing section, or empty fenced block all degrade to a clean no-op (exit 0, no JSON).
+3. Derives the task/goal context from the hook payload and the files it names, and exports it into each command's environment (table below).
+4. Executes each non-empty, non-comment line one at a time. On the first non-zero exit it stops and emits a structured failure JSON on stdout (`hook`, `status: "failed"`, `failed_command`, `command_index`, `exit_code`, `stdout`, `stderr`, `commands_completed`, `commands_remaining`); on all-success it emits a structured success JSON (`hook`, `status: "success"`, `commands_completed`, `duration_seconds`).
+5. Missing `.stride_lite.md`, missing section, or empty fenced block all degrade to a clean no-op (exit 0, no JSON).
 
-The hook environment is the same Bash shell environment Claude Code itself runs in — no special env-var injection beyond what the user's command lines reference. (This differs from the full Stride plugin which injects `TASK_*` / `GOAL_*` env vars; stride-lite hooks rely on the user writing self-contained commands.)
+### Injected environment variables
+
+Before running the section, the executor exports a derived environment block into every command's environment. stride-lite has no server, so there is no `hook.env` payload to forward — the values come from the task and goal markdown the hook already has in hand.
+
+| Variable | `before_task` | `after_task` | `after_goal` | Derived from |
+|---|:---:|:---:|:---:|---|
+| `HOOK_NAME` | ✓ | ✓ | ✓ | The section being run. |
+| `AGENT_NAME` | ✓ | ✓ | — | The intercepted `tool_input.subagent_type`. `after_goal` intercepts a file write, not an agent dispatch, so it has no agent to name. |
+| `TASK_FILE` | ✓ | ✓ | — | Absolute path of the `taskN.md` named in the Agent dispatch prompt. |
+| `TASK_NUMBER` | ✓ | ✓ | — | The digits in `taskN.md`. |
+| `TASK_TITLE` | ✓ | ✓ | — | The first `# ` heading of `TASK_FILE`. |
+| `GOAL_DIR` | ✓ | ✓ | ✓ | Parent directory of `TASK_FILE` — or of the written `goal.md`, for `after_goal`. |
+| `GOAL_FILE` | ✓ | ✓ | ✓ | `$GOAL_DIR/goal.md`. |
+| `GOAL_SLUG` | ✓ | ✓ | ✓ | Basename of `GOAL_DIR` — the slug `/stride-lite:create-goal` generated. |
+| `GOAL_TITLE` | ✓ | ✓ | ✓ | The first `# ` heading of `GOAL_FILE`. |
+
+Rules, identical in `stride-lite-hook.sh` and `stride-lite-hook.ps1` (`test/smoke.sh` diffs the key set out of both scripts and, where PowerShell is available, drives the `.ps1`'s derivation functions through the same fixtures as the bash stage — so drift in either the key set or the rules fails the suite):
+
+- **Every key is always exported.** A key the executor cannot derive — an unparseable prompt, a missing or unreadable file, a path outside the project — is exported as the **empty string**: defined-but-empty, never omitted, never an error. No derivation failure changes the hook's exit code, so a `set -u` inside your command cannot abort on one.
+- **`before_task` and `after_task` carry the `GOAL_*` keys too**, because a task file's parent directory *is* its goal directory. Only `after_goal` drops the `TASK_*` keys — it is a goal-level event with no single task behind it. A task file with no `goal.md` beside it reports empty `GOAL_*` rather than a directory name that merely looks like a slug.
+- **Values are exported, never spliced into the command text.** A title containing `$(id)`, backticks or `;` reaches your command as inert literal text. Quote your references (`"$TASK_TITLE"`) as you would any variable.
+- **Paths are confined to the project.** A prompt or `file_path` resolving outside `$CLAUDE_PROJECT_DIR` is refused and the derived keys stay empty, as is a symlinked task file pointing out of the tree.
+- **Nothing is cached.** The block lives in the hook process and the commands it spawns — no file on disk, and no value survives into the next invocation.
+- **No board, column or status keys.** stride-lite has no board, no column and no status field, so it exports nothing it cannot truthfully derive from the file tree. This is a deliberate divergence from the full Stride plugin's server-supplied `BOARD_*` / `COLUMN_*` / `TASK_STATUS` block: inventing empty versions here would teach a contract stride-lite cannot honour.
+
+Shaped as it appears in `.stride_lite.md` — the heading sits outside the fenced block:
+
+````markdown
+## after_task
+
+```bash
+echo "Finished task $TASK_NUMBER of $GOAL_SLUG: $TASK_TITLE"
+```
+````
 
 ## Bash scope
 

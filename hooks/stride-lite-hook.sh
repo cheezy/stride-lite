@@ -20,7 +20,8 @@
 #
 # Cross-platform parity contract: this script and stride-lite-hook.ps1 MUST detect
 # the same three trigger conditions, produce equivalent single-line JSON results
-# for the same input, and apply the same exit-code contract.
+# for the same input, export the same environment key set under the same
+# empty-on-underivable rule, and apply the same exit-code contract.
 
 set -uo pipefail
 
@@ -105,6 +106,238 @@ _json_array_from_lines() {
     printf '"%s"' "$(_json_escape "$line")"
   done
   printf ']'
+}
+
+# --- Derived hook environment (stride-lite native) ---
+# stride-lite has no server, so there is no `hook.env` block to forward. The
+# variable set is derived instead from the file context the hook already has:
+# the Agent dispatch prompt (before_task / after_task, which by the workflow
+# contract is the active task file's path) or the edited file path (after_goal).
+#
+# Rules, mirroring the full Stride executor's forwarding contract:
+#   - A value the script cannot derive is exported as the empty string. No
+#     derivation failure aborts the hook or changes its exit code, so a `set -u`
+#     inside a user's command sees defined-but-empty rather than unset.
+#   - Values are exported, never spliced into the command text, so a title
+#     containing $(...), backticks or semicolons reaches the command as inert
+#     literal text.
+#   - Keys that are not valid shell identifiers are dropped.
+#   - Nothing is persisted to disk. The exports live and die with this process;
+#     stride-lite has no env-cache lifecycle to clean up.
+#
+# The key set is deliberately file-shaped, not server-shaped: there is no board,
+# column or status in stride-lite, and exporting empty ones would teach a
+# contract the plugin cannot honour.
+
+_PROJECT_ABS=""
+
+# Export one KEY=value pair, dropping keys that are not shell identifiers.
+_export_env_kv() {
+  local _key="$1" _value="${2-}"
+  case "$_key" in
+    ''|[0-9]*|*[!A-Za-z0-9_]*) return 0 ;;
+  esac
+  # Values are exported, never spliced, so shell metacharacters are already
+  # inert and need no escaping. What still needs removing is structure:
+  # control characters (a CR from a CRLF-authored file, a stray tab; a NUL is
+  # dropped by `read` before we ever see it) and unbounded length, which is an
+  # argv-size problem rather than an injection one.
+  #
+  # Deliberately [[:cntrl:]] and not [![:print:]]: under LANG=C the latter
+  # would strip every byte >= 0x80 and mangle a legitimately non-ASCII title.
+  # Non-UTF-8 bytes pass through untouched — they are opaque data in an env
+  # value, and the child's own locale decides how to render them.
+  #
+  # Known, accepted divergence from the .ps1: PowerShell reads the heading with
+  # Get-Content -Encoding UTF8, which substitutes U+FFFD for each invalid byte,
+  # so a non-UTF-8 title is lossy on Windows and byte-exact here. The parity
+  # contract covers the key set and the empty rule, not byte-level equality of
+  # a malformed-encoding title.
+  _value="${_value//[[:cntrl:]]/}"
+  _value="${_value:0:512}"
+  export "$_key=$_value"
+}
+
+# Resolve a path (absolute, or relative to PROJECT_DIR) and confirm it sits
+# inside the project directory. Emits the resolved absolute path, or empty when
+# the containing directory does not exist or resolves outside the project.
+# `cd ... && pwd -P` canonicalizes `..` segments and symlinks without depending
+# on a GNU `realpath`, which macOS does not reliably ship.
+_resolve_in_project() {
+  local _p="$1" _dir _base _rp
+  [ -n "$_p" ] || { printf ''; return 0; }
+  [ -n "$_PROJECT_ABS" ] || { printf ''; return 0; }
+  # Join against the already-canonicalized project root, NOT $PROJECT_DIR:
+  # that defaults to "." and the process cwd is not guaranteed to be the
+  # project root here (run_stride_lite_section's `cd` has not happened yet).
+  case "$_p" in /*) ;; *) _p="$_PROJECT_ABS/$_p" ;; esac
+  case "$_p" in
+    */*) _dir="${_p%/*}"; _base="${_p##*/}" ;;
+    *)   _dir="."; _base="$_p" ;;
+  esac
+  [ -n "$_dir" ] || _dir="/"
+  [ -n "$_base" ] || { printf ''; return 0; }
+  _rp="$(cd "$_dir" 2>/dev/null && pwd -P)" || { printf ''; return 0; }
+  [ -n "$_rp" ] || { printf ''; return 0; }
+  case "$_rp/" in
+    "$_PROJECT_ABS"/*)
+      # Existence and readability are part of "derivable" — a path we cannot
+      # read is reported as empty, never as a phantom value.
+      { [ -f "$_rp/$_base" ] && [ -r "$_rp/$_base" ]; } || { printf ''; return 0; }
+      # The final component is the one path element `pwd -P` never canonicalizes,
+      # so a symlinked task file could still point outside the project. Refuse
+      # rather than follow it.
+      [ ! -L "$_rp/$_base" ] || { printf ''; return 0; }
+      printf '%s/%s' "$_rp" "$_base"
+      ;;
+    *) printf '' ;;
+  esac
+}
+
+# First single-`#` markdown heading of a file, trailing whitespace trimmed.
+# Empty when the file is missing, unreadable, or carries no such heading.
+# Read line-by-line with `read -r` only — the heading is user-authored markdown
+# and must never reach a subshell that could evaluate it.
+_first_heading() {
+  local _f="$1" _line _n=0
+  { [ -n "$_f" ] && [ -f "$_f" ] && [ -r "$_f" ]; } || { printf ''; return 0; }
+  while IFS= read -r _line || [ -n "$_line" ]; do
+    _n=$((_n + 1))
+    [ "$_n" -gt 200 ] && break
+    case "$_line" in
+      '# '*)
+        _line="${_line#\# }"
+        _line="${_line%"${_line##*[![:space:]]}"}"
+        printf '%s' "$_line"
+        return 0
+        ;;
+    esac
+  done < "$_f"
+  printf ''
+}
+
+# First stride-lite task/goal path token in an Agent dispatch prompt. The
+# workflow contract passes the bare task file path, but a prose prompt that
+# mentions the path resolves too. `read -a` splits on whitespace without glob
+# expansion (a `for tok in $text` loop would need `set -f`).
+#
+# Matches only `goal.md` and `task<N>.md` — the two filenames stride-lite
+# actually dispatches on. A looser `*.md` match would pick up a README.md or
+# CHANGELOG.md mentioned earlier in a prose prompt and derive a title from
+# the wrong file.
+_path_from_prompt() {
+  local _prompt="$1" _tok _leaf
+  local _toks=()
+  [ -n "$_prompt" ] || { printf ''; return 0; }
+  # _extract_string returns the raw JSON string body, so escape sequences are
+  # still two literal characters. A prompt written as "…/task1.md\n\nExplore it"
+  # would otherwise arrive as ONE token, "…/task1.md\n\nExplore" — the escapes
+  # separate words in the source text, so treat them as separators here too.
+  _prompt="${_prompt//\\n/ }"
+  _prompt="${_prompt//\\r/ }"
+  _prompt="${_prompt//\\t/ }"
+  IFS=$' \t' read -r -a _toks <<< "$_prompt"
+  [ ${#_toks[@]} -eq 0 ] && { printf ''; return 0; }
+  for _tok in "${_toks[@]}"; do
+    # Strip surrounding punctuation: a path cited mid-sentence as "…/task1.md,"
+    # or "(…/task1.md)" or "`…/task1.md`" is still that path.
+    while :; do
+      case "$_tok" in
+        *[\"\`\'\),.\;:]) _tok="${_tok%?}" ;;
+        *) break ;;
+      esac
+    done
+    while :; do
+      case "$_tok" in
+        [\"\`\'\(\[\<]*) _tok="${_tok#?}" ;;
+        *) break ;;
+      esac
+    done
+    _leaf="${_tok##*/}"
+    case "$_leaf" in
+      goal.md) printf '%s' "$_tok"; return 0 ;;
+      task*.md)
+        _leaf="${_leaf#task}"
+        _leaf="${_leaf%.md}"
+        case "$_leaf" in
+          ''|*[!0-9]*) ;;
+          *) printf '%s' "$_tok"; return 0 ;;
+        esac
+        ;;
+    esac
+  done
+  printf ''
+}
+
+# Derive and export the environment for one section run.
+#   $1 — hook name (before_task | after_task | after_goal)
+#   $2 — source path: the Agent dispatch prompt (pre) or the edited file path
+#        (post). May be empty, prose, or point at a file that does not exist.
+#   $3 — agent name: the dispatching subagent_type; empty for after_goal, which
+#        is triggered by a file write rather than an agent dispatch.
+# Always exports the full key set. Never returns non-zero.
+_derive_hook_env() {
+  local _hook="$1" _source="${2-}" _agent="${3-}"
+  local _task_file="" _task_number="" _task_title=""
+  local _goal_dir="" _goal_file="" _goal_slug="" _goal_title=""
+  local _candidate="" _resolved="" _base=""
+
+  _PROJECT_ABS="$(cd "$PROJECT_DIR" 2>/dev/null && pwd -P)" || _PROJECT_ABS=""
+  [ "$_PROJECT_ABS" = "/" ] && _PROJECT_ABS=""
+
+  case "$_hook" in
+    after_goal) _candidate="$_source" ;;
+    *)          _candidate="$(_path_from_prompt "$_source")" ;;
+  esac
+
+  _resolved="$(_resolve_in_project "$_candidate")"
+
+  if [ -n "$_resolved" ]; then
+    _base="${_resolved##*/}"
+    case "$_base" in
+      goal.md)
+        _goal_file="$_resolved"
+        ;;
+      *)
+        _task_file="$_resolved"
+        case "$_base" in
+          task[0-9]*.md)
+            _task_number="${_base#task}"
+            _task_number="${_task_number%.md}"
+            case "$_task_number" in ''|*[!0-9]*) _task_number="" ;; esac
+            ;;
+        esac
+        _task_title="$(_first_heading "$_task_file")"
+        ;;
+    esac
+
+    _goal_dir="${_resolved%/*}"
+    [ -n "$_goal_dir" ] || _goal_dir="/"
+    [ -n "$_goal_file" ] || _goal_file="$_goal_dir/goal.md"
+
+    if [ -f "$_goal_file" ] && [ -r "$_goal_file" ]; then
+      _goal_slug="${_goal_dir##*/}"
+      _goal_title="$(_first_heading "$_goal_file")"
+    else
+      # No goal.md beside the task file — this is a loose task (e.g. one from
+      # /stride-lite:create-task under PENDING/tasks/), not a goal member.
+      # Report absence rather than a directory name that only looks like a slug.
+      _goal_dir=""
+      _goal_file=""
+    fi
+  fi
+
+  _export_env_kv HOOK_NAME   "$_hook"
+  _export_env_kv TASK_FILE   "$_task_file"
+  _export_env_kv TASK_NUMBER "$_task_number"
+  _export_env_kv TASK_TITLE  "$_task_title"
+  _export_env_kv GOAL_DIR    "$_goal_dir"
+  _export_env_kv GOAL_FILE   "$_goal_file"
+  _export_env_kv GOAL_SLUG   "$_goal_slug"
+  _export_env_kv GOAL_TITLE  "$_goal_title"
+  _export_env_kv AGENT_NAME  "$_agent"
+
+  return 0
 }
 
 # --- Parse and execute one .stride_lite.md hook section ---
@@ -252,6 +485,10 @@ TOOL_NAME=$(_extract_string "tool_name" "$INPUT")
 
 HOOK_NAME=""
 BLOCKING=0
+# Source path and agent name for the derived hook environment (see
+# _derive_hook_env). Both stay empty when the payload carries neither.
+HOOK_SOURCE=""
+HOOK_AGENT=""
 
 case "$PHASE" in
   pre)
@@ -261,6 +498,19 @@ case "$PHASE" in
         stride-lite:task-explorer) HOOK_NAME="before_task"; BLOCKING=1 ;;
         stride-lite:task-reviewer) HOOK_NAME="after_task";  BLOCKING=1 ;;
       esac
+      if [ -n "$HOOK_NAME" ]; then
+        # The dispatch prompt is the active task file's path (workflow contract).
+        #
+        # `prompt` is the one field the extractor's "simple identifiers/paths"
+        # assumption does not fully hold for: _extract_string stops at the first
+        # double quote, escaped or not, so a prompt carrying an escaped quote
+        # before the path truncates and every derived key degrades to empty.
+        # The .ps1 uses a real JSON parser and does not truncate there. Both
+        # workflow dispatch sites pass a bare path, and the .sh degrades safely,
+        # so this is an accepted divergence rather than a derivation bug.
+        HOOK_SOURCE=$(_extract_string "prompt" "$INPUT")
+        HOOK_AGENT="$SUBAGENT_TYPE"
+      fi
     fi
     ;;
   post)
@@ -275,6 +525,7 @@ case "$PHASE" in
             if printf '%s' "$INPUT" | grep -q '## Completion Summary'; then
               HOOK_NAME="after_goal"
               BLOCKING=0
+              HOOK_SOURCE="$FILE_PATH"
             fi
             ;;
         esac
@@ -286,6 +537,8 @@ esac
 if [ -z "$HOOK_NAME" ]; then
   exit 0
 fi
+
+_derive_hook_env "$HOOK_NAME" "$HOOK_SOURCE" "$HOOK_AGENT"
 
 run_stride_lite_section "$HOOK_NAME"
 RC=$?

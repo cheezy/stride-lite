@@ -370,7 +370,7 @@ write_stride_lite_template() {
 
 This file is created by `/stride-lite:init`. Fill in the fields below.
 
-**Note (v0.9.0+):** The hook sections are executed automatically by the Claude Code harness via the plugin's `hooks.json` at the corresponding lifecycle points (`before_task` before each task-explorer dispatch and `after_task` before each task-reviewer dispatch, both blocking — exit 2 stops the dispatch; `after_goal` after the goal-level Completion Summary is written, advisory). The format mirrors the full Stride plugin's `.stride.md` so your snippets transfer across plugins.
+**Note (v0.9.0+):** The hook sections are executed automatically by the Claude Code harness via the plugin's `hooks.json` at the corresponding lifecycle points (`before_task` before each task-explorer dispatch and `after_task` before each task-reviewer dispatch, both blocking — exit 2 stops the dispatch; `after_goal` after the goal-level Completion Summary is written, advisory). The format mirrors the full Stride plugin's `.stride.md` so your snippets transfer across plugins. Each hook command also receives the task/goal context as environment variables — `HOOK_NAME`, `TASK_FILE`, `TASK_NUMBER`, `TASK_TITLE`, `GOAL_DIR`, `GOAL_FILE`, `GOAL_SLUG`, `GOAL_TITLE` and `AGENT_NAME` — each exported as the empty string when it cannot be derived.
 
 ## email
 
@@ -384,6 +384,8 @@ your-email@example.com
 ## after_task
 
 ```bash
+# Available here: HOOK_NAME TASK_FILE TASK_NUMBER TASK_TITLE GOAL_DIR GOAL_FILE GOAL_SLUG GOAL_TITLE AGENT_NAME
+# echo "Finished task $TASK_NUMBER of $GOAL_SLUG: $TASK_TITLE"
 ```
 
 ## after_goal
@@ -473,16 +475,24 @@ echo ""
 echo "hook routing (stride-lite-hook.sh)"
 
 HOOK_SH="$REPO_ROOT/hooks/stride-lite-hook.sh"
+HOOK_PS1="$REPO_ROOT/hooks/stride-lite-hook.ps1"
 HOOK_OUT=""
+HOOK_ERR=""
 HOOK_RC=0
 
-# run_hook <phase> <project-dir> <payload-json> — sets HOOK_OUT / HOOK_RC.
+# run_hook <phase> <project-dir> <payload-json> — sets HOOK_OUT / HOOK_ERR / HOOK_RC.
 # printf '%s' only: the payloads carry literal \n escapes that echo would
-# mangle. Stderr is dropped — the JSON contract lives on stdout.
+# mangle. Stdout carries the JSON contract; stderr is captured separately
+# because the hook mirrors each command's stdout to stderr on the success
+# path, which is where the injected env values are observable.
 run_hook() {
   local phase="$1" dir="$2" payload="$3"
-  HOOK_OUT="$(printf '%s' "$payload" | CLAUDE_PROJECT_DIR="$dir" bash "$HOOK_SH" "$phase" 2>/dev/null)"
+  local errfile
+  errfile="$(mktemp)"
+  HOOK_OUT="$(printf '%s' "$payload" | CLAUDE_PROJECT_DIR="$dir" bash "$HOOK_SH" "$phase" 2>"$errfile")"
   HOOK_RC=$?
+  HOOK_ERR="$(cat "$errfile" 2>/dev/null)"
+  rm -f "$errfile"
 }
 
 # assert_hook_out <label> <marker> — HOOK_OUT must contain the marker.
@@ -491,6 +501,24 @@ assert_hook_out() {
   case "$HOOK_OUT" in
     *"$marker"*) ok "$label" ;;
     *) nope "$label" "$marker in stdout" "$HOOK_OUT" ;;
+  esac
+}
+
+# assert_hook_err <label> <marker> — HOOK_ERR must contain the marker.
+assert_hook_err() {
+  local label="$1" marker="$2"
+  case "$HOOK_ERR" in
+    *"$marker"*) ok "$label" ;;
+    *) nope "$label" "$marker in stderr" "$HOOK_ERR" ;;
+  esac
+}
+
+# refute_hook_err <label> <marker> — HOOK_ERR must NOT contain the marker.
+refute_hook_err() {
+  local label="$1" marker="$2"
+  case "$HOOK_ERR" in
+    *"$marker"*) nope "$label" "$marker absent from stderr" "$HOOK_ERR" ;;
+    *) ok "$label" ;;
   esac
 }
 
@@ -594,6 +622,323 @@ assert_hook_out "failing before_task emits failure JSON" '"hook":"before_task","
 run_hook post "$HOOK_FAIL_DIR" "$GOAL_WRITE_PAYLOAD"
 assert_eq "failing after_goal section exits 0 (advisory)" "$HOOK_RC" "0"
 assert_hook_out "failing after_goal emits failure JSON" '"hook":"after_goal","status":"failed"'
+
+# ------------------------------------------------------------------
+# hook env injection (stride-lite-hook.sh)
+# ------------------------------------------------------------------
+#
+# Asserts the derived environment block the hook exports into each
+# .stride_lite.md command: the nine keys, their values for a real goal
+# directory, the empty-string-when-underivable rule, project containment, and
+# the inertness of a task title carrying shell metacharacters.
+#
+# The probe sections print each value bracketed as KEY=[value] so an empty
+# value is assertable rather than merely absent. Those prints land on the
+# hook's stderr (it mirrors each command's stdout there on the success path),
+# which run_hook now captures into HOOK_ERR.
+#
+# They use ${KEY-<UNSET>} rather than $KEY so an UNSET key renders as
+# KEY=[<UNSET>] and a set-but-empty one as KEY=[]. Without that the two are
+# indistinguishable and the headline rule — defined-but-empty, never omitted —
+# would survive a mutation that omits the export whenever the value is empty.
+# `-` (not `:-`) is the unset-only default, and the hook relaxes `set -u`
+# before the eval, so this is safe in the probe.
+
+echo ""
+echo "hook env injection (stride-lite-hook.sh)"
+
+HOOK_ENV_DIR="$SANDBOX/hook-env"
+ENV_GOAL_DIR="$HOOK_ENV_DIR/docs/implementation/PENDING/add-notifs"
+ENV_EVIL_DIR="$HOOK_ENV_DIR/docs/implementation/PENDING/evil-goal"
+ENV_OUTSIDE_DIR="$SANDBOX/outside-project/not-a-goal"
+mkdir -p "$ENV_GOAL_DIR" "$ENV_EVIL_DIR" "$ENV_OUTSIDE_DIR"
+
+printf '# Add notifications\n\nGoal body.\n'   > "$ENV_GOAL_DIR/goal.md"
+printf '# Wire up the socket\n\nTask body.\n'  > "$ENV_GOAL_DIR/task1.md"
+printf '# Evil goal\n\nGoal body.\n'           > "$ENV_EVIL_DIR/goal.md"
+printf '# Outside the project\n'               > "$ENV_OUTSIDE_DIR/task1.md"
+
+# Hostile heading: a quoted heredoc so the metacharacters land in the file
+# literally. If the value were ever spliced into the command text rather than
+# exported, $(id) would run and `touch` would create a marker in the project dir.
+cat > "$ENV_EVIL_DIR/task2.md" <<'TASKMD'
+# Add $(id) and `whoami`; touch pwned-marker
+
+## Description
+
+Fixture task whose title carries shell metacharacters.
+TASKMD
+
+cat > "$HOOK_ENV_DIR/.stride_lite.md" <<'CONFIG'
+## email
+
+hook-fixture@example.com
+
+## before_task
+
+```bash
+printf 'HOOK_NAME=[%s] TASK_FILE=[%s] TASK_NUMBER=[%s] TASK_TITLE=[%s] GOAL_DIR=[%s] GOAL_FILE=[%s] GOAL_SLUG=[%s] GOAL_TITLE=[%s] AGENT_NAME=[%s]\n' "${HOOK_NAME-<UNSET>}" "${TASK_FILE-<UNSET>}" "${TASK_NUMBER-<UNSET>}" "${TASK_TITLE-<UNSET>}" "${GOAL_DIR-<UNSET>}" "${GOAL_FILE-<UNSET>}" "${GOAL_SLUG-<UNSET>}" "${GOAL_TITLE-<UNSET>}" "${AGENT_NAME-<UNSET>}"
+```
+
+## after_task
+
+```bash
+printf 'HOOK_NAME=[%s] TASK_TITLE=[%s] GOAL_SLUG=[%s] AGENT_NAME=[%s]\n' "${HOOK_NAME-<UNSET>}" "${TASK_TITLE-<UNSET>}" "${GOAL_SLUG-<UNSET>}" "${AGENT_NAME-<UNSET>}"
+```
+
+## after_goal
+
+```bash
+printf 'HOOK_NAME=[%s] TASK_FILE=[%s] TASK_NUMBER=[%s] TASK_TITLE=[%s] GOAL_SLUG=[%s] GOAL_TITLE=[%s] AGENT_NAME=[%s]\n' "${HOOK_NAME-<UNSET>}" "${TASK_FILE-<UNSET>}" "${TASK_NUMBER-<UNSET>}" "${TASK_TITLE-<UNSET>}" "${GOAL_SLUG-<UNSET>}" "${GOAL_TITLE-<UNSET>}" "${AGENT_NAME-<UNSET>}"
+```
+CONFIG
+
+ENV_TASK_PAYLOAD='{"tool_name":"Agent","tool_input":{"subagent_type":"stride-lite:task-explorer","prompt":"docs/implementation/PENDING/add-notifs/task1.md"}}'
+ENV_PROSE_PAYLOAD='{"tool_name":"Agent","tool_input":{"subagent_type":"stride-lite:task-reviewer","prompt":"Review docs/implementation/PENDING/add-notifs/task1.md against its acceptance criteria."}}'
+ENV_EVIL_PAYLOAD='{"tool_name":"Agent","tool_input":{"subagent_type":"stride-lite:task-explorer","prompt":"docs/implementation/PENDING/evil-goal/task2.md"}}'
+ENV_TRAVERSAL_PAYLOAD='{"tool_name":"Agent","tool_input":{"subagent_type":"stride-lite:task-explorer","prompt":"../outside-project/not-a-goal/task1.md"}}'
+ENV_MISSING_PAYLOAD='{"tool_name":"Agent","tool_input":{"subagent_type":"stride-lite:task-explorer","prompt":"docs/implementation/PENDING/add-notifs/task9.md"}}'
+ENV_GOAL_PAYLOAD='{"tool_name":"Write","tool_input":{"file_path":"docs/implementation/PENDING/add-notifs/goal.md","content":"# Add notifications\n\n## Completion Summary\n\nAll tasks done."}}'
+ENV_ABS_PAYLOAD="$(printf '{"tool_name":"Agent","tool_input":{"subagent_type":"stride-lite:task-explorer","prompt":"%s"}}' "$ENV_GOAL_DIR/task1.md")"
+
+# --- before_task against a real goal directory: all nine keys, real values ---
+run_hook pre "$HOOK_ENV_DIR" "$ENV_TASK_PAYLOAD"
+assert_eq "env probe before_task exits 0" "$HOOK_RC" "0"
+
+ENV_MISSING_KEYS=""
+for _key in HOOK_NAME TASK_FILE TASK_NUMBER TASK_TITLE GOAL_DIR GOAL_FILE GOAL_SLUG GOAL_TITLE AGENT_NAME; do
+  case "$HOOK_ERR" in
+    *"$_key=["*) ;;
+    *) ENV_MISSING_KEYS="$ENV_MISSING_KEYS $_key" ;;
+  esac
+done
+assert_eq "all nine env keys reach the executed command" "$ENV_MISSING_KEYS" ""
+
+assert_hook_err "before_task exports HOOK_NAME"   'HOOK_NAME=[before_task]'
+assert_hook_err "before_task exports TASK_NUMBER" 'TASK_NUMBER=[1]'
+assert_hook_err "before_task exports TASK_TITLE"  'TASK_TITLE=[Wire up the socket]'
+assert_hook_err "before_task exports GOAL_SLUG"   'GOAL_SLUG=[add-notifs]'
+assert_hook_err "before_task exports GOAL_TITLE"  'GOAL_TITLE=[Add notifications]'
+assert_hook_err "before_task exports AGENT_NAME"  'AGENT_NAME=[stride-lite:task-explorer]'
+# The hook canonicalizes with `pwd -P`, so compare against the canonical form:
+# on macOS $SANDBOX is under /var, which is a symlink to /private/var.
+ENV_GOAL_DIR_REAL="$(cd "$ENV_GOAL_DIR" && pwd -P)"
+assert_hook_err "TASK_FILE is the absolute task path" "TASK_FILE=[$ENV_GOAL_DIR_REAL/task1.md]"
+assert_hook_err "GOAL_DIR is the absolute goal directory" "GOAL_DIR=[$ENV_GOAL_DIR_REAL]"
+assert_hook_err "GOAL_FILE is the absolute goal.md path" "GOAL_FILE=[$ENV_GOAL_DIR_REAL/goal.md]"
+
+# --- an absolute prompt path resolves identically to a relative one ---
+run_hook pre "$HOOK_ENV_DIR" "$ENV_ABS_PAYLOAD"
+assert_hook_err "absolute prompt path derives TASK_TITLE" 'TASK_TITLE=[Wire up the socket]'
+assert_hook_err "absolute prompt path derives GOAL_SLUG"  'GOAL_SLUG=[add-notifs]'
+
+# --- a prose prompt that merely mentions the path still resolves ---
+run_hook pre "$HOOK_ENV_DIR" "$ENV_PROSE_PAYLOAD"
+assert_hook_err "after_task exports HOOK_NAME"           'HOOK_NAME=[after_task]'
+assert_hook_err "prose prompt still derives TASK_TITLE"  'TASK_TITLE=[Wire up the socket]'
+assert_hook_err "after_task exports the reviewer as AGENT_NAME" 'AGENT_NAME=[stride-lite:task-reviewer]'
+
+# --- after_goal: goal keys populated, task keys and AGENT_NAME empty ---
+run_hook post "$HOOK_ENV_DIR" "$ENV_GOAL_PAYLOAD"
+assert_eq "env probe after_goal exits 0" "$HOOK_RC" "0"
+assert_hook_err "after_goal exports HOOK_NAME"  'HOOK_NAME=[after_goal]'
+assert_hook_err "after_goal exports GOAL_SLUG"  'GOAL_SLUG=[add-notifs]'
+assert_hook_err "after_goal exports GOAL_TITLE" 'GOAL_TITLE=[Add notifications]'
+assert_hook_err "after_goal leaves TASK_FILE empty"   'TASK_FILE=[]'
+assert_hook_err "after_goal leaves TASK_NUMBER empty" 'TASK_NUMBER=[]'
+assert_hook_err "after_goal leaves TASK_TITLE empty"  'TASK_TITLE=[]'
+assert_hook_err "after_goal leaves AGENT_NAME empty"  'AGENT_NAME=[]'
+
+# --- a metacharacter-bearing title is inert literal text ---
+run_hook pre "$HOOK_ENV_DIR" "$ENV_EVIL_PAYLOAD"
+assert_eq "metacharacter title does not fail the hook" "$HOOK_RC" "0"
+assert_hook_out "metacharacter title still emits success JSON" '"hook":"before_task","status":"success"'
+assert_hook_err "metacharacter title reaches the command verbatim" \
+  'TASK_TITLE=[Add $(id) and `whoami`; touch pwned-marker]'
+refute_hook_err "the \$(id) in a title did not execute" 'uid='
+if [ ! -e "$HOOK_ENV_DIR/pwned-marker" ]; then
+  ok "the '; touch' in a title did not execute"
+else
+  nope "the '; touch' in a title did not execute" "no pwned-marker file" "pwned-marker created"
+fi
+
+# --- a path resolving outside the project is refused, not followed ---
+# This is also the undeterminable-branch half of the coverage target: every key
+# except HOOK_NAME and AGENT_NAME (which are derived from the payload, not the
+# file tree, and so are always available) must come back defined-but-empty.
+run_hook pre "$HOOK_ENV_DIR" "$ENV_TRAVERSAL_PAYLOAD"
+assert_eq "out-of-project path does not fail the hook" "$HOOK_RC" "0"
+assert_hook_err "out-of-project path leaves TASK_FILE empty"   'TASK_FILE=[]'
+assert_hook_err "out-of-project path leaves TASK_NUMBER empty" 'TASK_NUMBER=[]'
+assert_hook_err "out-of-project path leaves TASK_TITLE empty"  'TASK_TITLE=[]'
+assert_hook_err "out-of-project path leaves GOAL_DIR empty"    'GOAL_DIR=[]'
+assert_hook_err "out-of-project path leaves GOAL_FILE empty"   'GOAL_FILE=[]'
+assert_hook_err "out-of-project path leaves GOAL_SLUG empty"   'GOAL_SLUG=[]'
+assert_hook_err "out-of-project path leaves GOAL_TITLE empty"  'GOAL_TITLE=[]'
+assert_hook_err "out-of-project path still exports HOOK_NAME"  'HOOK_NAME=[before_task]'
+assert_hook_err "out-of-project path still exports AGENT_NAME" 'AGENT_NAME=[stride-lite:task-explorer]'
+
+# --- a task file with no single-# heading yields an empty title, not an error ---
+printf 'No heading here.\n\n## Description\n\nBody.\n' > "$ENV_GOAL_DIR/task5.md"
+run_hook pre "$HOOK_ENV_DIR" '{"tool_name":"Agent","tool_input":{"subagent_type":"stride-lite:task-explorer","prompt":"docs/implementation/PENDING/add-notifs/task5.md"}}'
+assert_eq "headingless task file does not fail the hook" "$HOOK_RC" "0"
+assert_hook_err "headingless task file leaves TASK_TITLE empty" 'TASK_TITLE=[]'
+assert_hook_err "headingless task file still derives TASK_NUMBER" 'TASK_NUMBER=[5]'
+
+# --- a missing file degrades to empty values without changing the exit code ---
+run_hook pre "$HOOK_ENV_DIR" "$ENV_MISSING_PAYLOAD"
+assert_eq "missing task file does not fail the hook" "$HOOK_RC" "0"
+assert_hook_err "missing task file leaves TASK_FILE empty"  'TASK_FILE=[]'
+assert_hook_err "missing task file leaves TASK_TITLE empty" 'TASK_TITLE=[]'
+
+# --- an undeterminable prompt still exports every key, all empty ---
+run_hook pre "$HOOK_ENV_DIR" "$EXPLORER_PAYLOAD"
+assert_eq "undeterminable prompt does not fail the hook" "$HOOK_RC" "0"
+assert_hook_err "undeterminable prompt still exports HOOK_NAME" 'HOOK_NAME=[before_task]'
+assert_hook_err "undeterminable prompt leaves TASK_TITLE empty" 'TASK_TITLE=[]'
+assert_hook_err "undeterminable prompt leaves GOAL_SLUG empty"  'GOAL_SLUG=[]'
+
+# --- cross-platform parity, part 1: the .sh and .ps1 export the same key set ---
+# Extracted from the real export call sites in both scripts, so the assertion
+# cannot pass while an implementation drifts. This pins the KEY SET only —
+# part 2 below covers the rules.
+EXPECTED_ENV_KEYS="$(printf '%s\n' AGENT_NAME GOAL_DIR GOAL_FILE GOAL_SLUG GOAL_TITLE HOOK_NAME TASK_FILE TASK_NUMBER TASK_TITLE)"
+SH_ENV_KEYS="$(grep -oE '_export_env_kv +[A-Z_]+' "$HOOK_SH" | awk '{print $2}' | sort -u)"
+PS_ENV_KEYS="$(grep -oE "Set-StrideLiteEnvKv +-Key +'[A-Z_]+'" "$HOOK_PS1" \
+  | grep -oE "'[A-Z_]+'" | tr -d "'" | sort -u)"
+assert_eq "hook env key set is identical in .sh and .ps1" "$PS_ENV_KEYS" "$SH_ENV_KEYS"
+assert_eq "hook env key set is the documented nine" "$SH_ENV_KEYS" "$EXPECTED_ENV_KEYS"
+
+# --- cross-platform parity, part 2: the .ps1 obeys the same RULES ---
+#
+# The .ps1 cannot be driven end-to-end from here: it reads stdin via `@($input)`,
+# which is empty for an OS-level pipe, so a piped payload never reaches it. That
+# is a pre-existing defect (it reproduces identically on `git show HEAD:` of the
+# script) and is out of scope for the env-injection work — but it means the
+# routing stage above has no PowerShell counterpart.
+#
+# What IS reachable is the part this task added: the derivation functions. The
+# harness below AST-extracts them from the real script — no copy of the logic
+# lives here — and drives them through the same fixtures the .sh stage uses,
+# asserting the same derived values, the same empty-on-underivable rule, the
+# same project containment, and the same metacharacter inertness.
+#
+# Gated on PowerShell being present. When it is absent the suite records an
+# explicit skip line rather than passing silently.
+
+PS_PARITY_DIR="$SANDBOX/ps-parity"
+mkdir -p "$PS_PARITY_DIR"
+cat > "$PS_PARITY_DIR/harness.ps1" <<'PSHARNESS'
+param([string]$ScriptPath, [string]$ProjDir)
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
+# The path-separator, comparison-mode and project-root setup is RE-DECLARED
+# here rather than extracted — $ProjectAbs is the containment baseline and
+# $PathComparison the Windows case-insensitivity rule, so these carry rules
+# too and a change to them in the .ps1 would not reach this harness. The
+# derivation functions below ARE extracted from the script itself.
+$ProjectDir = $ProjDir
+$PathSep = [System.IO.Path]::DirectorySeparatorChar
+$PathComparison = if ($PathSep -eq '\') {
+    [System.StringComparison]::OrdinalIgnoreCase
+} else {
+    [System.StringComparison]::Ordinal
+}
+$ProjectAbs = (Resolve-Path -LiteralPath $ProjectDir).ProviderPath.TrimEnd($PathSep)
+
+$errs = $null; $toks = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$toks, [ref]$errs)
+if ($errs.Count -gt 0) { [Console]::Error.WriteLine('parse errors'); exit 1 }
+foreach ($f in $ast.FindAll({
+        param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst]
+    }, $true)) {
+    if ($f.Name -like '*StrideLite*' -and $f.Name -ne 'Invoke-StrideLiteSection') {
+        . ([scriptblock]::Create($f.Extent.Text))
+    }
+}
+
+$keys = 'HOOK_NAME','TASK_FILE','TASK_NUMBER','TASK_TITLE','GOAL_DIR','GOAL_FILE','GOAL_SLUG','GOAL_TITLE','AGENT_NAME'
+$scenarios = @(
+    @{ label = 'derived';   hook = 'before_task'; src = 'docs/implementation/PENDING/add-notifs/task1.md'; agent = 'stride-lite:task-explorer' },
+    @{ label = 'traversal'; hook = 'before_task'; src = '../outside-project/not-a-goal/task1.md';         agent = 'stride-lite:task-explorer' },
+    @{ label = 'missing';   hook = 'before_task'; src = 'docs/implementation/PENDING/add-notifs/task9.md'; agent = 'stride-lite:task-explorer' },
+    @{ label = 'evil';      hook = 'before_task'; src = 'docs/implementation/PENDING/evil-goal/task2.md';  agent = 'stride-lite:task-explorer' },
+    @{ label = 'goal';      hook = 'after_goal';  src = 'docs/implementation/PENDING/add-notifs/goal.md';  agent = '' }
+)
+
+foreach ($s in $scenarios) {
+    # Seed every key with a sentinel rather than clearing it, so a key the
+    # function fails to set reads back as <UNSET> while one it sets to the
+    # empty string reads back as empty. That is the distinction the headline
+    # rule is about — defined-but-empty, never omitted — and without it a
+    # mutation that skips the export whenever the value is empty would slip
+    # past the empty-branch assertions below.
+    #
+    # A sentinel and not $null: on .NET, SetEnvironmentVariable(name, $null)
+    # followed by GetEnvironmentVariable returns the EMPTY STRING, not $null,
+    # so a null-based check cannot tell the two apart (verified on pwsh 7).
+    foreach ($k in $keys) { [System.Environment]::SetEnvironmentVariable($k, '<UNSET>', 'Process') }
+    Set-StrideLiteHookEnv -Hook $s.hook -Source $s.src -Agent $s.agent
+    $parts = foreach ($k in $keys) {
+        "$k=[" + [System.Environment]::GetEnvironmentVariable($k, 'Process') + ']'
+    }
+    [Console]::Out.WriteLine($s.label + ' ' + ($parts -join ' '))
+}
+PSHARNESS
+
+PS_BIN=""
+if command -v pwsh > /dev/null 2>&1; then
+  PS_BIN="pwsh"
+elif command -v powershell > /dev/null 2>&1; then
+  PS_BIN="powershell"
+fi
+
+if [ -z "$PS_BIN" ]; then
+  echo "  SKIP  .ps1 rule parity: no pwsh/powershell on PATH (key-set parity above still ran)"
+  echo "  SKIP  .ps1 end-to-end via hooks/stride-lite-hook.ps1: blocked by the pre-existing"
+  echo "        @(\$input) stdin defect, which predates this change"
+else
+  PS_PARITY_OUT="$("$PS_BIN" -NoProfile -File "$PS_PARITY_DIR/harness.ps1" \
+    -ScriptPath "$HOOK_PS1" -ProjDir "$HOOK_ENV_DIR" 2>/dev/null)"
+
+  # assert_ps_parity <label> <scenario-prefix> <marker>
+  assert_ps_parity() {
+    local label="$1" prefix="$2" marker="$3" line
+    line="$(printf '%s\n' "$PS_PARITY_OUT" | grep "^$prefix " 2>/dev/null)"
+    case "$line" in
+      *"$marker"*) ok "$label" ;;
+      *) nope "$label" "$marker in the .ps1 '$prefix' scenario" "$line" ;;
+    esac
+  }
+
+  assert_ps_parity ".ps1 derives TASK_NUMBER like the .sh"  derived   'TASK_NUMBER=[1]'
+  assert_ps_parity ".ps1 derives TASK_TITLE like the .sh"   derived   'TASK_TITLE=[Wire up the socket]'
+  assert_ps_parity ".ps1 derives GOAL_SLUG like the .sh"    derived   'GOAL_SLUG=[add-notifs]'
+  assert_ps_parity ".ps1 derives GOAL_TITLE like the .sh"   derived   'GOAL_TITLE=[Add notifications]'
+  assert_ps_parity ".ps1 derives AGENT_NAME like the .sh"   derived   'AGENT_NAME=[stride-lite:task-explorer]'
+  assert_ps_parity ".ps1 refuses an out-of-project path"    traversal 'TASK_FILE=[]'
+  assert_ps_parity ".ps1 empties GOAL_SLUG out of project"  traversal 'GOAL_SLUG=[]'
+  assert_ps_parity ".ps1 still exports HOOK_NAME when underivable" traversal 'HOOK_NAME=[before_task]'
+  assert_ps_parity ".ps1 empties a missing task file"       missing   'TASK_TITLE=[]'
+  assert_ps_parity ".ps1 keeps a metacharacter title literal" evil \
+    'TASK_TITLE=[Add $(id) and `whoami`; touch pwned-marker]'
+  assert_ps_parity ".ps1 after_goal derives GOAL_SLUG"      goal      'GOAL_SLUG=[add-notifs]'
+  assert_ps_parity ".ps1 after_goal empties TASK_FILE"      goal      'TASK_FILE=[]'
+  assert_ps_parity ".ps1 after_goal empties AGENT_NAME"     goal      'AGENT_NAME=[]'
+
+  echo "  SKIP  .ps1 end-to-end via hooks/stride-lite-hook.ps1: blocked by the pre-existing"
+  echo "        @(\$input) stdin defect, which predates this change"
+fi
+
+# --- the workflow SKILL.md documents every key it exports ---
+ENV_UNDOCUMENTED=""
+for _key in $EXPECTED_ENV_KEYS; do
+  if ! grep -q "$_key" "$REPO_ROOT/skills/stride-lite-workflow/SKILL.md"; then
+    ENV_UNDOCUMENTED="$ENV_UNDOCUMENTED $_key"
+  fi
+done
+assert_eq "every exported key is documented in the workflow SKILL.md" "$ENV_UNDOCUMENTED" ""
 
 # ------------------------------------------------------------------
 # Summary
