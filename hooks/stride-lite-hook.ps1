@@ -1,7 +1,10 @@
-param(
-    [Parameter(Position = 0)]
-    [string]$Phase = ''
-)
+# No [Parameter(Position = 0)] attribute, deliberately. It makes this an
+# ADVANCED script, which rejects unbindable pipeline input at BINDING time --
+# before the body runs -- so an internal-pipeline caller got "The input object
+# cannot be bound to any parameters" and the fallback below could never receive
+# anything. A plain positional parameter binds $Phase identically and leaves
+# both input paths working.
+param([string]$Phase = '')
 
 # stride-lite-hook.ps1 — Bridges Claude Code hooks to stride-lite .stride_lite.md hook execution.
 #
@@ -50,18 +53,35 @@ if (-not (Test-Path $StrideLiteMd)) { exit 0 }
 # silently no-opped. The documented hook auto-fire had therefore never worked on
 # the native-Windows path, and because it exits 0 nothing ever reported it (D215).
 #
-# [Console]::In.ReadToEnd() reads the real stdin. It is guarded on
-# IsInputRedirected because on a terminal it would block forever waiting for
-# EOF, which would hang the hook rather than no-op it. The `$input` path stays
-# as a fallback so a PowerShell-internal pipeline caller still works.
+# Reading [Console]::In directly gets the real stdin. It is guarded on
+# IsInputRedirected because on a terminal the read would block forever waiting
+# for EOF, hanging the hook rather than no-opping it. The `$input` path stays as
+# a fallback for a PowerShell-internal pipeline caller.
 $InputJson = ''
 if ([Console]::IsInputRedirected) {
-    # Bounded read: the harness supplies a small JSON document, and a
-    # pathological payload should not be held whole in memory. Anything past
-    # the limit is not parsed anyway.
-    $buffer = New-Object char[] 1048576
-    $read = [Console]::In.ReadBlock($buffer, 0, $buffer.Length)
-    if ($read -gt 0) { $InputJson = -join $buffer[0..($read - 1)] }
+    # Read to end of stream, in chunks, with a cap. Reading to EOF matches
+    # stride-lite-hook.sh's own `INPUT=$(cat)`, so a caller that holds stdin
+    # open blocks both executors identically -- that is parity, not a defect.
+    #
+    # The cap bounds resident memory, but a payload that exceeds it is NOT
+    # silently truncated: truncation would make ConvertFrom-Json throw, the
+    # catch exit 0, and nothing fire -- reintroducing the exact silent-exit-0
+    # signature this defect existed to remove. Say so on stderr instead.
+    $sb = New-Object System.Text.StringBuilder
+    $buffer = New-Object char[] 65536
+    $limit = 1048576
+    $overflow = $false
+    while ($true) {
+        $read = [Console]::In.Read($buffer, 0, $buffer.Length)
+        if ($read -le 0) { break }
+        if (($sb.Length + $read) -gt $limit) { $overflow = $true; break }
+        [void]$sb.Append($buffer, 0, $read)
+    }
+    if ($overflow) {
+        [Console]::Error.WriteLine("stride-lite-hook.ps1: hook payload exceeds $limit bytes; refusing to act on a truncated document")
+        exit 0
+    }
+    $InputJson = $sb.ToString()
 }
 if (-not $InputJson) {
     # Fallback for a PowerShell-internal pipeline caller.

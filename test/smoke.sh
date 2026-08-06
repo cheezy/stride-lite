@@ -3734,7 +3734,10 @@ else
   # A non-matching payload still fires nothing, so the routing above is
   # selective rather than the script running on anything it is handed.
   _ps_e2e pre '{"tool_name":"Agent","tool_input":{"subagent_type":"general-purpose","prompt":"x"}}'
-  assert_eq ".ps1 e2e: an unrelated dispatch fires nothing" "$PS_E2E_OUT" ""
+assert_eq ".ps1 e2e: an unrelated dispatch fires nothing" "$PS_E2E_OUT" ""
+  _ps_e2e pre '{"tool_name":"Agent","tool_input":{"subagent_type":"stride-lite:task-explorer","prompt":"g/task1.md"}}'
+  assert_has ".ps1 e2e: ...while the same payload with the explorer type does fire" "$E2E_DIR/.out" \
+    '"hook":"before_task"' 
   # And an empty payload is still the silent no-op the contract promises.
   _ps_e2e pre ''
   assert_eq ".ps1 e2e: an empty payload still exits 0" "$PS_E2E_RC" "0"
