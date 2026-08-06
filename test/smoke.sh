@@ -416,7 +416,12 @@ select_workflow_branch() {
       # drops real paths.
       [ -z "$path" ] && continue
       [ "$path" = "File" ] && continue
-      [ "$path" = "(none)" ] && continue
+      # Case-insensitive, so this agrees with the enrichment gate's placeholder
+      # check — otherwise "(None)" is an empty cell to one parser and a file
+      # path to the other, and they describe the same section incompatibly.
+      case "$(printf '%s' "$path" | tr '[:upper:]' '[:lower:]')" in
+        '(none)') continue ;;
+      esac
       probe="${path//-/}"
       probe="${probe//:/}"
       [ -z "$probe" ] && continue
@@ -759,6 +764,451 @@ else
 fi
 
 # ------------------------------------------------------------------
+# task-enricher agent contract
+# ------------------------------------------------------------------
+#
+# The enricher fills ONLY a task file's empty sections. Two invariants matter
+# enough to pin: the set of sections it claims to own must exactly partition
+# the set the task template renders (so a template change cannot silently leave
+# a section unowned or double-owned), and its tool grant must never gain Bash.
+
+echo ""
+echo "task-enricher agent contract"
+
+ENRICHER="$REPO_ROOT/agents/task-enricher.md"
+TASK_TEMPLATE_SKILL="$REPO_ROOT/skills/stride-lite-create-goal/SKILL.md"
+WORKFLOW_SKILL="$REPO_ROOT/skills/stride-lite-workflow/SKILL.md"
+
+if [ -f "$ENRICHER" ]; then
+  ok "agents/task-enricher.md exists"
+else
+  nope "agents/task-enricher.md exists" "the agent file" "missing"
+fi
+
+# Required sections, mirroring how the other surface files are structured.
+ENRICHER_MISSING=""
+for _sec in '## Inputs' '## What this agent does' '## What this agent does NOT do' \
+            '## Sections this agent owns' '## Enrichment methodology' \
+            '## In-place mutation contract' '## Never copy secrets into the task file' \
+            '## Pitfalls'; do
+  grep -qxF "$_sec" "$ENRICHER" || ENRICHER_MISSING="$ENRICHER_MISSING [$_sec]"
+done
+assert_eq "task-enricher.md carries every required section" "$ENRICHER_MISSING" ""
+
+# Four phases, per the acceptance criterion.
+ENRICHER_PHASES="$(grep -c '^### Phase [0-9]' "$ENRICHER" | tr -d ' ')"
+assert_eq "task-enricher.md documents a four-phase methodology" "$ENRICHER_PHASES" "4"
+
+# The tool grant is a security boundary: no Bash, ever.
+# Frontmatter-scoped so a `tools:` mention in the body cannot satisfy it.
+ENRICHER_TOOLS="$(awk 'NR==1 && $0=="---" { inb=1; next } inb && /^---$/ { exit }
+                       inb && /^tools:[[:space:]]/ { print; exit }' "$ENRICHER")"
+assert_eq "task-enricher grants exactly Read, Grep, Glob, Write" \
+  "$ENRICHER_TOOLS" "tools: Read, Grep, Glob, Write"
+case "$ENRICHER_TOOLS" in
+  *Edit*) nope "task-enricher holds no Edit tool" \
+            "no Edit — read-whole/write-once is enforced by the tool list" "$ENRICHER_TOOLS" ;;
+  *) ok "task-enricher holds no Edit tool" ;;
+esac
+case "$ENRICHER_TOOLS" in
+  *Bash*) nope "task-enricher's tool grant excludes Bash" "no Bash in the tools line" "$ENRICHER_TOOLS" ;;
+  '') nope "task-enricher's tool grant excludes Bash" "a tools: line" "none found" ;;
+  *) ok "task-enricher's tool grant excludes Bash" ;;
+esac
+case "$ENRICHER_TOOLS" in
+  *Read*Grep*Glob*) ok "task-enricher's tool grant includes Read, Grep and Glob" ;;
+  *) nope "task-enricher's tool grant includes Read, Grep and Glob" "Read, Grep, Glob" "$ENRICHER_TOOLS" ;;
+esac
+
+# --- Heading-sync invariant -----------------------------------------------
+# The template's headings must be exactly partitioned by the agent's owned and
+# protected lists. Extract all three from their real sources so neither side
+# can drift without this failing.
+# Anchor on the taskN.md template heading — the file also carries a goal.md
+# template fence earlier, and taking the first fence would read the wrong one.
+TEMPLATE_HEADINGS="$(awk '
+  /^### taskN\.md template$/ { armed=1; next }
+  armed && /^```markdown$/    { armed=0; inb=1; next }
+  inb && /^```$/              { exit }
+  inb && /^## /               { print }
+' "$TASK_TEMPLATE_SKILL" | sort -u)"
+TEMPLATE_COUNT="$(printf '%s\n' "$TEMPLATE_HEADINGS" | grep -c '^## ')"
+assert_eq "the taskN template renders 14 sections" "$TEMPLATE_COUNT" "14"
+
+# The agent's owned/protected table: two columns of backticked headings.
+OWNED_HEADINGS="$(awk -F'|' '
+  /^\| Owned \(fillable when sparse\) \| Protected \(never touched\) \|/ { inb=1; next }
+  inb && /^\|[-: |]+\|$/ { next }
+  inb && /^\|/ { print $2; next }
+  inb { exit }
+' "$ENRICHER" | tr -d '`' | sed -E 's/^ +//; s/ +$//' | grep '^## ' | sort -u)"
+PROTECTED_HEADINGS="$(awk -F'|' '
+  /^\| Owned \(fillable when sparse\) \| Protected \(never touched\) \|/ { inb=1; next }
+  inb && /^\|[-: |]+\|$/ { next }
+  inb && /^\|/ { print $3; next }
+  inb { exit }
+' "$ENRICHER" | tr -d '`' | sed -E 's/^ +//; s/ +$//' | grep '^## ' | sort -u)"
+
+OWNED_COUNT="$(printf '%s\n' "$OWNED_HEADINGS" | grep -c '^## ')"
+PROTECTED_COUNT="$(printf '%s\n' "$PROTECTED_HEADINGS" | grep -c '^## ')"
+assert_eq "the agent claims 11 owned sections" "$OWNED_COUNT" "11"
+assert_eq "the agent claims 3 protected sections" "$PROTECTED_COUNT" "3"
+
+# Disjoint: no heading may be both owned and protected.
+BOTH="$(printf '%s\n%s\n' "$OWNED_HEADINGS" "$PROTECTED_HEADINGS" | sort | uniq -d)"
+assert_eq "no section is both owned and protected" "$BOTH" ""
+
+# Exhaustive: owned + protected covers exactly the template's headings.
+UNION="$(printf '%s\n%s\n' "$OWNED_HEADINGS" "$PROTECTED_HEADINGS" | sort -u)"
+if UNION_DIFF="$(diff <(printf '%s\n' "$TEMPLATE_HEADINGS") <(printf '%s\n' "$UNION") 2>&1)"; then
+  ok "owned + protected is exactly the set of template headings"
+else
+  nope "owned + protected is exactly the set of template headings" \
+    "the agent's two lists to partition the template's 14 headings" "$UNION_DIFF"
+fi
+
+# The three intent sections are the protected ones, named explicitly.
+PROTECTED_EXPECTED="$(printf '%s\n' '## Description' '## What' '## Why')"
+assert_eq "the protected set is exactly Description, Why and What" \
+  "$PROTECTED_HEADINGS" "$PROTECTED_EXPECTED"
+
+# The workflow's Step 1a must name every owned section it will check.
+#
+# Grep the STEP 1a SLICE, not the whole file: Step 4 already backticks all
+# fourteen template headings as the implementer's spec list, so a whole-file
+# grep succeeds even if Step 1a is deleted outright.
+STEP1A_SLICE="$(awk '/^### Step 1a/ { f=1; next } /^### Step 2 / { f=0 } f' "$WORKFLOW_SKILL")"
+
+if [ -n "$STEP1A_SLICE" ]; then
+  ok "the workflow SKILL.md has a Step 1a enrichment section"
+else
+  nope "the workflow SKILL.md has a Step 1a enrichment section" \
+    "a '### Step 1a' section before Step 2" "not found"
+fi
+
+case "$STEP1A_SLICE" in
+  *"stride-lite:task-enricher"*) ok "Step 1a dispatches stride-lite:task-enricher" ;;
+  *) nope "Step 1a dispatches stride-lite:task-enricher" "the agent named in Step 1a" "$STEP1A_SLICE" ;;
+esac
+
+STEP1A_MISSING=""
+while IFS= read -r _h; do
+  [ -n "$_h" ] || continue
+  case "$STEP1A_SLICE" in
+    *"\`$_h\`"*) ;;
+    *) STEP1A_MISSING="$STEP1A_MISSING [$_h]" ;;
+  esac
+done <<EOF_HEADINGS
+$OWNED_HEADINGS
+EOF_HEADINGS
+assert_eq "Step 1a names every owned section" "$STEP1A_MISSING" ""
+
+# Step 1a must also state the ordering constraint against Step 3's matrix —
+# enriching after the matrix resolves would route a task that is about to gain
+# key files straight to skip-all.
+case "$STEP1A_SLICE" in
+  *"BEFORE Step 3"*) ok "Step 1a states it must run before Step 3's matrix" ;;
+  *) nope "Step 1a states it must run before Step 3's matrix" "the ordering rationale" "$STEP1A_SLICE" ;;
+esac
+
+# --- Sparse detection ------------------------------------------------------
+# Mirrors the rule both the workflow Step 1a and the agent file document: a
+# section is sparse when its body is empty, whitespace-only, or exactly the
+# "- (none)" empty-list placeholder.
+count_sparse_sections() {
+  local file="$1" current="" body_has_content=0 sparse=0 line probe cell
+  local -a owned=('## Where' '## Acceptance criteria' '## Patterns to follow' \
+                  '## Pitfalls' '## Security considerations' '## Integration points' \
+                  '## Technology requirements' '## Logging requirements' \
+                  '## Key files' '## Verification steps' '## Testing strategy')
+  [ -f "$file" ] || { printf '0'; return 0; }
+
+  _enricher_flush() {
+    [ -n "$current" ] || return 0
+    local o lo
+    for o in "${owned[@]}"; do
+      lo="$(printf '%s' "$o" | tr '[:upper:]' '[:lower:]')"
+      # PREFIX match, not equality — select_workflow_branch matches its heading
+      # with `case "$lower" in '## key files'*)`, so "## Key files:" and
+      # "## Key files (updated)" are the same section to it. Requiring exact
+      # equality here would make the gate blind to a heading the matrix sees,
+      # which is the neither-enriched-nor-reviewed hazard one axis over.
+      # No owned or protected heading is a prefix of another, so this is safe.
+      case "$current" in
+        "$lo"*)
+          if [ "$body_has_content" -eq 0 ]; then sparse=$(( sparse + 1 )); fi
+          ;;
+      esac
+    done
+  }
+
+  while IFS= read -r line || [ -n "$line" ]; do
+    # Trim FIRST, then match — and match the heading case-insensitively. This
+    # must agree with select_workflow_branch, which reads the same ## Key files
+    # section: if one parser sees "## Key Files" or an indented heading as a
+    # different section and the other does not, a task can be judged
+    # not-sparse (no enrichment) and zero-key-files (skip-all) at once.
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+
+    case "$line" in
+      '## '*)
+        _enricher_flush
+        current="$(printf '%s' "$line" | tr '[:upper:]' '[:lower:]')"
+        body_has_content=0
+        continue
+        ;;
+    esac
+    [ -n "$current" ] || continue
+    [ -z "$line" ] && continue
+
+    # A table row: judge it by its first cell, the way the key-files table is
+    # rendered. This is what makes "| (none) | |" and a header-plus-separator
+    # table read as EMPTY — without it the thinnest task files, the ones that
+    # most need enrichment, would be classified as populated.
+    case "$line" in
+      '|'*)
+        cell="${line#|}"
+        cell="${cell%%|*}"
+        cell="${cell#"${cell%%[![:space:]]*}"}"
+        cell="${cell%"${cell##*[![:space:]]}"}"
+        cell="${cell#\`}"
+        cell="${cell%\`}"
+        [ -z "$cell" ] && continue
+        [ "$cell" = "File" ] && continue
+        probe="${cell//-/}"; probe="${probe//:/}"
+        [ -z "$probe" ] && continue
+        case "$(printf '%s' "$cell" | tr '[:upper:]' '[:lower:]')" in
+          '(none)') continue ;;
+        esac
+        body_has_content=1
+        continue
+        ;;
+    esac
+
+    # A prose or bullet line. Strip one bullet marker, then compare the WHOLE
+    # line with "(none)" — a substring match would misclassify the shipped
+    # fixture's "- (none for this task — ...)" prose as a placeholder.
+    cell="${line#- }"
+    cell="${cell#\* }"
+    cell="${cell#\`}"
+    cell="${cell%\`}"
+    case "$(printf '%s' "$cell" | tr '[:upper:]' '[:lower:]')" in
+      '(none)'|'') continue ;;
+    esac
+    body_has_content=1
+  done < "$file"
+  _enricher_flush
+
+  printf '%s' "$sparse"
+}
+
+# write_sparse_fixture <path> <body-for-the-three-derivable-sections> [<body-for-the-intent-sections>]
+write_sparse_fixture() {
+  local target="$1" filler="$2" intent="${3:-- real content}" h
+  mkdir -p "$(dirname "$target")"
+  {
+    echo "# Fixture task"
+    echo ""
+    echo "> Type: work · Complexity: small · Priority: medium"
+    for h in '## Description' '## Why' '## What' '## Where' '## Acceptance criteria' \
+             '## Patterns to follow' '## Pitfalls' '## Security considerations' \
+             '## Integration points' '## Technology requirements' \
+             '## Logging requirements' '## Key files' '## Verification steps' \
+             '## Testing strategy'; do
+      echo ""
+      echo "$h"
+      echo ""
+      case "$h" in
+        '## Key files'|'## Patterns to follow'|'## Testing strategy') echo "$filler" ;;
+        '## Description'|'## Why'|'## What') echo "$intent" ;;
+        *) echo "- real content" ;;
+      esac
+    done
+  } > "$target"
+}
+
+ENRICH_DIR="$SANDBOX/enricher"
+
+write_sparse_fixture "$ENRICH_DIR/sparse.md" "- (none)"
+assert_eq "three (none) sections are detected as sparse" \
+  "$(count_sparse_sections "$ENRICH_DIR/sparse.md")" "3"
+
+write_sparse_fixture "$ENRICH_DIR/populated.md" "- something concrete"
+assert_eq "a fully-populated task file is detected as not sparse" \
+  "$(count_sparse_sections "$ENRICH_DIR/populated.md")" "0"
+
+# Edge case: heading present, body is whitespace only.
+write_sparse_fixture "$ENRICH_DIR/whitespace.md" "   "
+assert_eq "a whitespace-only body counts as sparse" \
+  "$(count_sparse_sections "$ENRICH_DIR/whitespace.md")" "3"
+
+# Edge case: a prior task-explorer run left an Exploration Report at the bottom.
+cp "$ENRICH_DIR/sparse.md" "$ENRICH_DIR/with-report.md"
+printf '\n## Exploration Report\n\n### File state\n\n- (none)\n' >> "$ENRICH_DIR/with-report.md"
+assert_eq "an existing Exploration Report does not change the sparse count" \
+  "$(count_sparse_sections "$ENRICH_DIR/with-report.md")" "3"
+
+# The intent sections are never counted, even when empty. Built in pure bash so
+# the case cannot silently degrade on a host without python3.
+write_sparse_fixture "$ENRICH_DIR/intent-empty.md" "- something concrete" "- (none)"
+assert_eq "empty intent sections are never counted as sparse" \
+  "$(count_sparse_sections "$ENRICH_DIR/intent-empty.md")" "0"
+
+# ...and an intent-empty file whose derivable sections are ALSO empty still
+# counts only the derivable ones.
+write_sparse_fixture "$ENRICH_DIR/both-empty.md" "- (none)" "- (none)"
+assert_eq "only derivable sections are counted when intent is empty too" \
+  "$(count_sparse_sections "$ENRICH_DIR/both-empty.md")" "3"
+
+# --- Table-rendered placeholder shapes ------------------------------------
+# ## Key files renders as a TABLE. If "| (none) | |" or a header-plus-separator
+# table read as populated, the enricher would never fire on exactly the thinnest
+# task files — while select_workflow_branch counts the same section as zero and
+# routes them to skip-all. That combination is no enrichment AND no review.
+ENRICH_TABLE_DIR="$ENRICH_DIR/tables"
+mkdir -p "$ENRICH_TABLE_DIR"
+
+_write_keyfiles_variant() {
+  printf '# T\n\n> Type: work · Complexity: small · Priority: medium\n\n## Key files\n\n%b\n\n## Verification steps\n\n- real content\n' \
+    "$2" > "$1"
+}
+
+_write_keyfiles_variant "$ENRICH_TABLE_DIR/none-row.md"   '| File | Note |\n|---|---|\n| (none) | |'
+_write_keyfiles_variant "$ENRICH_TABLE_DIR/empty-table.md" '| File | Note |\n|---|---|'
+_write_keyfiles_variant "$ENRICH_TABLE_DIR/bare-none.md"   '(none)'
+_write_keyfiles_variant "$ENRICH_TABLE_DIR/real.md"        '| File | Note |\n|---|---|\n| `lib/a.ex` | why |'
+
+assert_eq "a (none) table row counts the section as sparse" \
+  "$(count_sparse_sections "$ENRICH_TABLE_DIR/none-row.md")" "1"
+assert_eq "a header-plus-separator table counts the section as sparse" \
+  "$(count_sparse_sections "$ENRICH_TABLE_DIR/empty-table.md")" "1"
+assert_eq "a bare (none) line counts the section as sparse" \
+  "$(count_sparse_sections "$ENRICH_TABLE_DIR/bare-none.md")" "1"
+assert_eq "a real table row counts the section as populated" \
+  "$(count_sparse_sections "$ENRICH_TABLE_DIR/real.md")" "0"
+
+# Whole-line equality, not substring: the shipped fixture renders
+# "- (none for this task — ...)", which is prose and must stay content.
+assert_eq "the shipped fully-populated fixture reports nothing sparse" \
+  "$(count_sparse_sections "$REPO_ROOT/fixtures/expected-output/task1.md")" "0"
+
+# --- The enrichment gate and the decision matrix must agree ----------------
+# They read the same ## Key files TABLE with two different parsers. If they
+# disagree, a task can be judged "has key files" (no enrichment) and "zero key
+# files" (skip-all) at once — neither enriched nor reviewed. The agreement is
+# scoped to table-shaped bodies: select_workflow_branch counts rows only, so a
+# bullet-list key-files section is zero there and populated here. That is a
+# pre-existing limitation of that helper, recorded in its own Edge cases.
+assert_eq "bare (none) key files: sparse here, skip-all in the matrix" \
+  "$(count_sparse_sections "$MATRIX_DIR/t-small-0.md")/$(select_workflow_branch "$MATRIX_DIR/t-small-0.md")" \
+  "1/skip-all"
+assert_eq "header-only key-files table: sparse here, skip-all in the matrix" \
+  "$(count_sparse_sections "$MATRIX_DIR/t-emptytable.md")/$(select_workflow_branch "$MATRIX_DIR/t-emptytable.md")" \
+  "1/skip-all"
+assert_eq "a (none) row beside one real file: populated here, skip-all in the matrix" \
+  "$(count_sparse_sections "$MATRIX_DIR/t-nonerow.md")/$(select_workflow_branch "$MATRIX_DIR/t-nonerow.md")" \
+  "0/skip-all"
+assert_eq "two real key files: not sparse here, explore-review in the matrix" \
+  "$(count_sparse_sections "$MATRIX_DIR/t-small-2.md")/$(select_workflow_branch "$MATRIX_DIR/t-small-2.md")" \
+  "0/explore-review"
+
+# Heading variants must be seen identically by BOTH parsers. A capital-F or
+# indented heading that one sees and the other does not is how a task ends up
+# neither enriched nor reviewed — the same divergence class that bit the
+# decision matrix in the task before this one.
+_write_keyfiles_variant "$ENRICH_TABLE_DIR/capital.md" '| File | Note |\n|---|---|\n| (none) | |'
+sed -i.bak 's/^## Key files$/## Key Files/' "$ENRICH_TABLE_DIR/capital.md" && rm -f "$ENRICH_TABLE_DIR/capital.md.bak"
+assert_eq "a capital-F Key Files heading is still classified" \
+  "$(count_sparse_sections "$ENRICH_TABLE_DIR/capital.md")" "1"
+
+_write_keyfiles_variant "$ENRICH_TABLE_DIR/indented.md" '| File | Note |\n|---|---|\n| (none) | |'
+sed -i.bak 's/^## Key files$/   ## Key files/' "$ENRICH_TABLE_DIR/indented.md" && rm -f "$ENRICH_TABLE_DIR/indented.md.bak"
+assert_eq "an indented Key files heading is still classified" \
+  "$(count_sparse_sections "$ENRICH_TABLE_DIR/indented.md")" "1"
+
+# And both parsers must agree on those variants, not merely each behave.
+MATRIX_CAPITAL="$ENRICH_TABLE_DIR/matrix-capital.md"
+printf '# T\n\n> Type: work · Complexity: small · Priority: medium\n\n## Key Files\n\n| File | Note |\n|---|---|\n| `lib/a.ex` | x |\n| `lib/b.ex` | x |\n\n## Verification steps\n\n- real\n' > "$MATRIX_CAPITAL"
+assert_eq "capital heading with two real files: not sparse, and the matrix reviews" \
+  "$(count_sparse_sections "$MATRIX_CAPITAL")/$(select_workflow_branch "$MATRIX_CAPITAL")" \
+  "0/explore-review"
+
+# The pure "(none)"-only table, cross-checked against both parsers.
+assert_eq "a (none)-only key-files table: sparse here, skip-all in the matrix" \
+  "$(count_sparse_sections "$ENRICH_TABLE_DIR/none-row.md")/$(select_workflow_branch "$ENRICH_TABLE_DIR/none-row.md")" \
+  "1/skip-all"
+
+# The sparse rule is worded identically in the workflow skill and the agent —
+# the cross-file agreement of this rule is what makes the two documents one
+# contract, so claim it only if it is pinned.
+# Anchor to the rule's LOCATION, not to any occurrence in the file. The phrase
+# also appears in the agent's frontmatter description, and a whole-file grep is
+# satisfied by that blurb while the normative rule is free to drift — a grep
+# whose scope is wider than its subject, which is the shape of every coverage
+# gap this stage has had.
+SPARSE_RULE='absent, empty, whitespace-only, or a `(none)` placeholder in any rendered shape'
+
+# In the agent: the classification rule inside the fenced "What this agent does" block.
+ENRICHER_RULE_SLICE="$(awk '/^## What this agent does$/ { f=1; next } f && /^## / { exit } f' "$ENRICHER")"
+case "$ENRICHER_RULE_SLICE" in
+  *"$SPARSE_RULE"*) ok "the agent states the sparse rule in its classification block" ;;
+  *) nope "the agent states the sparse rule in its classification block" \
+       "the rule inside '## What this agent does'" "$ENRICHER_RULE_SLICE" ;;
+esac
+
+# In the workflow: the Step 1a slice extracted above.
+case "$STEP1A_SLICE" in
+  *"$SPARSE_RULE"*) ok "Step 1a states the sparse rule in its own section" ;;
+  *) nope "Step 1a states the sparse rule in its own section" "the rule inside Step 1a" "$STEP1A_SLICE" ;;
+esac
+
+# A suffixed heading is the same section to select_workflow_branch, so it must
+# be the same section to the gate too.
+_write_keyfiles_variant "$ENRICH_TABLE_DIR/suffix-colon.md" '| File | Note |\n|---|---|\n| (none) | |'
+sed -i.bak 's/^## Key files$/## Key files:/' "$ENRICH_TABLE_DIR/suffix-colon.md" && rm -f "$ENRICH_TABLE_DIR/suffix-colon.md.bak"
+assert_eq "a colon-suffixed Key files heading is still classified" \
+  "$(count_sparse_sections "$ENRICH_TABLE_DIR/suffix-colon.md")" "1"
+
+MATRIX_SUFFIX="$ENRICH_TABLE_DIR/matrix-suffix.md"
+printf '# T\n\n> Type: work · Complexity: small · Priority: medium\n\n## Key files (updated)\n\n| File | Note |\n|---|---|\n| (none) | |\n\n## Verification steps\n\n- real\n' > "$MATRIX_SUFFIX"
+assert_eq "a parenthetical-suffixed heading: sparse here, skip-all in the matrix" \
+  "$(count_sparse_sections "$MATRIX_SUFFIX")/$(select_workflow_branch "$MATRIX_SUFFIX")" \
+  "1/skip-all"
+
+# Mixed-case placeholders must read the same way to both parsers.
+MATRIX_MIXED="$ENRICH_TABLE_DIR/matrix-mixedcase.md"
+printf '# T\n\n> Type: work · Complexity: small · Priority: medium\n\n## Key files\n\n| File | Note |\n|---|---|\n| (None) | |\n| (NONE) | |\n\n## Verification steps\n\n- real\n' > "$MATRIX_MIXED"
+assert_eq "mixed-case (none) rows: sparse here, skip-all in the matrix" \
+  "$(count_sparse_sections "$MATRIX_MIXED")/$(select_workflow_branch "$MATRIX_MIXED")" \
+  "1/skip-all"
+
+# --- Step 1a's trigger set is the four gate sections, not all eleven -------
+STEP1A_TRIGGERS=""
+for _t in '## Key files' '## Acceptance criteria' '## Verification steps' '## Testing strategy'; do
+  case "$STEP1A_SLICE" in
+    *"\`$_t\`"*) ;;
+    *) STEP1A_TRIGGERS="$STEP1A_TRIGGERS [$_t]" ;;
+  esac
+done
+assert_eq "Step 1a names all four trigger sections" "$STEP1A_TRIGGERS" ""
+case "$STEP1A_SLICE" in
+  *"strict subset"*) ok "Step 1a states the trigger set is a subset of the fillable set" ;;
+  *) nope "Step 1a states the trigger set is a subset of the fillable set" \
+       "the trigger-subset rationale" "$STEP1A_SLICE" ;;
+esac
+
+# install.sh's dynamic agent count must match the files on disk.
+INSTALL_AGENT_COUNT="$(ls "$REPO_ROOT/agents"/*.md 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq "the agents/ directory holds four subagents" "$INSTALL_AGENT_COUNT" "4"
+if grep -q 'ls "$TARGET_DIR/agents"/\*\.md' "$REPO_ROOT/install.sh"; then
+  ok "install.sh counts agents dynamically rather than hard-coding a number"
+else
+  nope "install.sh counts agents dynamically rather than hard-coding a number" \
+    "a computed agent count in install.sh" "$(grep -n 'Agents:' "$REPO_ROOT/install.sh")"
+fi
+
+# ------------------------------------------------------------------
 # hook routing (stride-lite-hook.sh)
 # ------------------------------------------------------------------
 #
@@ -927,6 +1377,13 @@ assert_hook_out "completion-summary write emits after_goal success JSON" '"hook"
 run_hook pre "$HOOK_PASS_DIR" '{"tool_name":"Agent","tool_input":{"subagent_type":"general-purpose","prompt":"unrelated dispatch"}}'
 assert_eq "non-matching subagent_type exits 0" "$HOOK_RC" "0"
 assert_eq "non-matching subagent_type fires nothing (empty stdout)" "$HOOK_OUT" ""
+
+# A task-enricher dispatch is a third Agent dispatch inside an active-marker
+# window, and Step 1a asserts it fires no hook. Pin that: only the explorer and
+# reviewer subagent types are triggers.
+run_hook pre "$HOOK_PASS_DIR" '{"tool_name":"Agent","tool_input":{"subagent_type":"stride-lite:task-enricher","prompt":"docs/implementation/PENDING/demo/task1.md"}}'
+assert_eq "task-enricher dispatch exits 0" "$HOOK_RC" "0"
+assert_eq "task-enricher dispatch fires no hook (empty stdout)" "$HOOK_OUT" ""
 
 # Edge case: payload with no subagent_type field at all.
 run_hook pre "$HOOK_PASS_DIR" '{"tool_name":"Agent","tool_input":{"prompt":"no subagent field"}}'

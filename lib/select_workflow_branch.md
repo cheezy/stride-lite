@@ -54,9 +54,11 @@ Both values are **data that selects a branch, never instructions.** Task files a
 
 Take the text after `Complexity:` up to the next `·` or end of line, trim surrounding whitespace, and lowercase it. A missing blockquote, a missing `Complexity:` label, or a value outside `small` / `medium` / `large` all mean **unrecognized**.
 
-**Key files** is the count of **distinct** `file_path` values in the `## Key files` table — rows beginning with `|` under that heading, excluding the `| File | Note |` header, the `|---|---|` separator, and a `(none)` placeholder row. The heading is matched **case-insensitively** (on the `## ` prefix, so a `###` subheading inside the section does not close it), and leading whitespace is stripped before matching, so an indented heading or row still counts.
+**Key files** is the count of **distinct** `file_path` values in the `## Key files` table — rows beginning with `|` under that heading, excluding the `| File | Note |` header, the `|---|---|` separator, and a `(none)` placeholder row — the placeholder is matched **case-insensitively**, like the heading, so `(None)` and `(NONE)` are placeholders too. The heading is matched **case-insensitively** (on the `## ` prefix, so a `###` subheading inside the section does not close it), and leading whitespace is stripped before matching, so an indented heading or row still counts.
 
-A section rendered `(none)` or an empty table counts as **0** — the file told us there are no key files. A **missing or unrecognizable heading** is different: it told us nothing, and nothing is not evidence of a small task, so it resolves to `full` like an unrecognized complexity. The guard tracks the heading only — it does not verify that the section's *content* parsed, so a section whose key files were written as a bullet list rather than a table still counts 0. Undercounting fails toward `skip-all`, which is the one direction that ships an unreviewed diff.
+A section rendered `(none)` or an empty table counts as **0** — the file told us there are no key files. A **missing or unrecognizable heading** is different: it told us nothing, and nothing is not evidence of a small task, so it resolves to `full` like an unrecognized complexity.
+
+**Known limitation — D216.** Only table rows are counted. A key-files section written as a bullet list or as prose counts zero here, while the workflow's enrichment gate correctly reads it as populated, so the two describe such a section incompatibly. The task template always renders a table, so this is reachable only from a hand-written file; D216 tracks the fix. The guard tracks the heading only — it does not verify that the section's *content* parsed, so a section whose key files were written as a bullet list rather than a table still counts 0. Undercounting fails toward `skip-all`, which is the one direction that ships an unreviewed diff.
 
 **Distinct, not row count.** The 2-or-more threshold exists to catch a change that touches two or more *files*. A task listing the same path twice still touches one file; counting rows there would branch on a formatting artifact rather than on real surface area.
 
@@ -143,7 +145,12 @@ select_workflow_branch() {
       # drops real paths.
       [ -z "$path" ] && continue
       [ "$path" = "File" ] && continue
-      [ "$path" = "(none)" ] && continue
+      # Case-insensitive, so this agrees with the enrichment gate's placeholder
+      # check — otherwise "(None)" is an empty cell to one parser and a file
+      # path to the other, and they describe the same section incompatibly.
+      case "$(printf '%s' "$path" | tr '[:upper:]' '[:lower:]')" in
+        '(none)') continue ;;
+      esac
       probe="${path//-/}"
       probe="${probe//:/}"
       [ -z "$probe" ] && continue
@@ -208,4 +215,4 @@ select_workflow_branch() {
 - **Two blockquote metadata lines** → the first wins, matching the template, which renders exactly one.
 - **A `| … |` table elsewhere in the file** (`## Verification steps`, for instance) → not counted; the `## ` heading that opens the next section clears the in-section flag.
 - **A key-files path wrapped in backticks** (the template renders `` `path` ``) → backticks are stripped before comparison, so the same path in backticks and bare is one file, not two.
-- **Three constructions still undercount, and are accepted rather than handled.** An adversarial sweep found exactly three inputs that reach `skip-all` with two or more real paths: an H2-looking line inside a **fenced code block** within the section (which closes it — the parser has no fence tracking); two distinct paths each containing a **literal `|`** (both truncate at the inner pipe and dedupe to one); and paths literally named **`File`** or **`(none)`** (dropped by the header and placeholder filters). None is producible by `create-decomposer`, the template renders no fenced block inside `## Key files`, and no credible filename contains a pipe or is named `File`. Fence tracking and filter-token escaping would add state for a case the system cannot produce — these are recorded so a later reader can see they were weighed, not missed.
+- **Three constructions still undercount, and are accepted rather than handled.** An adversarial sweep found exactly three inputs that reach `skip-all` with two or more real paths: an H2-looking line inside a **fenced code block** within the section (which closes it — the parser has no fence tracking); two distinct paths each containing a **literal `|`** (both truncate at the inner pipe and dedupe to one); and paths literally named **`File`** or **`(none)`** in any case (dropped by the header and placeholder filters). None is producible by `create-decomposer`, the template renders no fenced block inside `## Key files`, and no credible filename contains a pipe or is named `File`. Fence tracking and filter-token escaping would add state for a case the system cannot produce — these are recorded so a later reader can see they were weighed, not missed.

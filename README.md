@@ -118,6 +118,22 @@ Both flags accept relative or absolute paths. The output base is created with `m
 
 In addition to the three slash commands, stride-lite ships subagents that you can dispatch directly via Claude Code's `Agent` tool.
 
+### `stride-lite:task-enricher`
+
+Fills in the empty sections of a sparse task markdown file. `create-decomposer` writes task files from a prompt with no codebase access, so `## Key files`, `## Patterns to follow` and `## Testing strategy` are guesses by construction — and a hand-written task file may have nothing in them at all. The agent detects which of the eleven derivable sections are empty or `- (none)`, explores the codebase to ground them in real files, and rewrites **only those sections** in place.
+
+Invoke it via Claude Code's `Agent` tool with `subagent_type: stride-lite:task-enricher` and the task-file path as the prompt:
+
+```
+Dispatch stride-lite:task-enricher on docs/implementation/PENDING/add-notifications/task2.md
+```
+
+**Hooks do not fire on a hand-run dispatch.** The `.stride_lite.md` hooks fire on the explorer and reviewer dispatches, not this one — see [Cross-platform hook enforcement](#cross-platform-hook-enforcement-v090).
+
+After it runs, the previously-empty sections carry grounded content and everything else is byte-identical — including the title, `## Description`, `## Why` and `## What`, which are intent and are never touched, and any section that already had content, which is somebody's decision and is left alone.
+
+**Nothing is appended.** Unlike task-explorer, this agent adds no section; it only fills bodies under headings the template already rendered. A fully-populated task file makes it report "not sparse" and exit without writing at all.
+
 ### `stride-lite:task-explorer`
 
 Enriches a generated task markdown file with concrete codebase context. The agent takes the task-file path as input, parses the `## Key files`, `## Patterns to follow`, `## Where`, and `## Testing strategy` sections, runs read-only codebase exploration (Read each key_file, Grep for patterns, Glob for related tests), and appends an `## Exploration Report` section to the bottom of the input file with the findings.
@@ -150,13 +166,13 @@ After it runs, the input file gains a new `## Review Report` section at the bott
 
 **Re-runs replace in place** — same contract as task-explorer. Dispatching the agent a second time slices from the existing `## Review Report` heading through EOF and overwrites.
 
-**Convention when using both subagents:** run `stride-lite:task-explorer` FIRST (during planning, before implementation) and `stride-lite:task-reviewer` LAST (after implementation). Both reports can coexist on the same file — Exploration above, Review at the bottom. If you reverse the order (reviewer first, explorer second), the explorer's "always last" contract from v0.6.0 will refuse to mutate; remove the Review Report manually and re-run explorer to recover.
+**Convention when using the three task subagents:** run `stride-lite:task-enricher` FIRST if the task file has empty sections (it grounds them, and adds no section of its own), then `stride-lite:task-explorer` (during planning, before implementation), and `stride-lite:task-reviewer` LAST (after implementation). Both reports can coexist on the same file — Exploration above, Review at the bottom. If you reverse the order (reviewer first, explorer second), the explorer's "always last" contract from v0.6.0 will refuse to mutate; remove the Review Report manually and re-run explorer to recover.
 
 **Bash scope:** task-reviewer's tool list includes `Bash` (the only stride-lite agent that has it) so it can run `git diff` / `git log` to capture the change set. Bash is explicitly scoped to read-only git commands only — no `mix test`, `npm run`, `curl`, no mutating git operations (`commit`/`push`/`checkout`/`reset`).
 
 ## Workflow
 
-Added in **v0.8.0** and hardened with harness-enforced hook execution in **v0.9.0**, the `stride-lite-workflow` skill is the file-based equivalent of the full Stride plugin's `stride-workflow` orchestrator. It walks a goal directory through the eight-step task lifecycle, dispatching the two existing subagents at the right moments while Claude Code's PreToolUse/PostToolUse harness auto-fires the three `.stride_lite.md` hooks at the corresponding intercept points.
+Added in **v0.8.0** and hardened with harness-enforced hook execution in **v0.9.0**, the `stride-lite-workflow` skill is the file-based equivalent of the full Stride plugin's `stride-workflow` orchestrator. It walks a goal directory through the eight-step task lifecycle, dispatching the three task subagents at the right moments while Claude Code's PreToolUse/PostToolUse harness auto-fires the three `.stride_lite.md` hooks at the corresponding intercept points.
 
 ### Cross-platform hook enforcement (v0.9.0+)
 
@@ -195,6 +211,7 @@ Activate stride-lite-workflow on docs/implementation/PENDING/add-notifications/
 **The eight-step loop**, run for each incomplete task in the goal directory (numeric `taskN.md` order):
 
 1. **Select the next task** — first `taskN.md` without a `## Completion Summary` section
+   - **Step 1a — enrichment check** — if `## Key files`, `## Acceptance criteria`, `## Verification steps` or `## Testing strategy` is empty or `(none)`, dispatch `stride-lite:task-enricher` to ground them in the real codebase before anything reads the file. A task whose four gate sections are already populated skips it entirely.
 2. **Run the `## before_task` hook** from `.stride_lite.md` (blocking — non-zero exit stops the workflow)
 3. **Dispatch `stride-lite:task-explorer`** against the task file (appends `## Exploration Report`) — **gated by the complexity decision matrix** (see below)
    - **Step 3a — plan the implementation** — an in-context outline for `medium` and `large` tasks only; dispatches nothing and writes nothing
@@ -214,9 +231,11 @@ Activate stride-lite-workflow on docs/implementation/PENDING/add-notifications/
 | `large` | any | yes | yes | yes |
 | absent or unrecognized | any | yes | yes | yes |
 
+Step 1a runs before the matrix is resolved, deliberately — the matrix counts `## Key files`, and a sparse file would resolve to `skip-all` on a task that is about to gain five of them.
+
 So a one-line typo fix costs no agent dispatches, while anything touching two or more files is always reviewed. An unreadable signal falls through to the full path — absence of evidence is not evidence of a small task. Because the `.stride_lite.md` hooks auto-fire on the two dispatches, a skipped dispatch also skips its hook; every skip is recorded by name and reason in the task's `## Completion Summary`, so it stays auditable after the fact.
 
-The skill never POSTs to any API — it's a file-only orchestrator wrapping the existing surface (create-goal, create-task, init, task-explorer, task-reviewer). See `skills/stride-lite-workflow/SKILL.md` for the full contract.
+The skill never POSTs to any API — it's a file-only orchestrator wrapping the existing surface (create-goal, create-task, init, task-enricher, task-explorer, task-reviewer). See `skills/stride-lite-workflow/SKILL.md` for the full contract.
 
 ## Output layout
 
