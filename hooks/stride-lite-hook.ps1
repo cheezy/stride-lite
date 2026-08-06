@@ -42,8 +42,42 @@ $StrideLiteMd = Join-Path $ProjectDir '.stride_lite.md'
 if (-not $Phase) { exit 0 }
 if (-not (Test-Path $StrideLiteMd)) { exit 0 }
 
-# Read Claude Code hook input from stdin
-$InputJson = @($input) -join "`n"
+# Read Claude Code hook input from stdin.
+#
+# `$input` is populated ONLY for a PowerShell-internal pipeline. For an
+# OS-level pipe -- which is how Claude Code's harness actually invokes this --
+# it is empty, so the guard below fired on every real invocation and the script
+# silently no-opped. The documented hook auto-fire had therefore never worked on
+# the native-Windows path, and because it exits 0 nothing ever reported it (D215).
+#
+# [Console]::In.ReadToEnd() reads the real stdin. It is guarded on
+# IsInputRedirected because on a terminal it would block forever waiting for
+# EOF, which would hang the hook rather than no-op it. The `$input` path stays
+# as a fallback so a PowerShell-internal pipeline caller still works.
+$InputJson = ''
+if ([Console]::IsInputRedirected) {
+    # Bounded read: the harness supplies a small JSON document, and a
+    # pathological payload should not be held whole in memory. Anything past
+    # the limit is not parsed anyway.
+    $buffer = New-Object char[] 1048576
+    $read = [Console]::In.ReadBlock($buffer, 0, $buffer.Length)
+    if ($read -gt 0) { $InputJson = -join $buffer[0..($read - 1)] }
+}
+if (-not $InputJson) {
+    # Fallback for a PowerShell-internal pipeline caller.
+    #
+    # Reached through Get-Variable rather than by writing `$input`, and that is
+    # not stylistic: a LEXICAL `$input` token anywhere in the script makes
+    # PowerShell treat it as pipeline-consuming, so it attempts parameter
+    # binding on the piped object -- which both emits "The input object cannot
+    # be bound to any parameters" and CONSUMES stdin before the body runs,
+    # leaving the read above with nothing. Measured, not inferred: the same
+    # script with a literal `$input` reads 0 bytes from a pipe that a script
+    # without one reads in full.
+    $piped = Get-Variable -Name 'input' -ValueOnly -ErrorAction SilentlyContinue
+    if ($piped) { $InputJson = @($piped) -join "`n" }
+}
+# A genuinely empty payload is still a silent no-op -- existing contract.
 if (-not $InputJson) { exit 0 }
 
 # --- Pure JSON parsing via built-in ConvertFrom-Json (no module installs) ---

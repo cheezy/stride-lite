@@ -3639,8 +3639,7 @@ fi
 
 if [ -z "$PS_BIN" ]; then
   echo "  SKIP  .ps1 rule parity: no pwsh/powershell on PATH (key-set parity above still ran)"
-  echo "  SKIP  .ps1 end-to-end via hooks/stride-lite-hook.ps1: blocked by the pre-existing"
-  echo "        @(\$input) stdin defect, which predates this change"
+  echo "  SKIP  .ps1 end-to-end via hooks/stride-lite-hook.ps1: no pwsh/powershell on PATH"
 else
   PS_MARKER_PROBE_DIR="$PS_PARITY_DIR/marker-probe"
   mkdir -p "$PS_MARKER_PROBE_DIR"
@@ -3683,8 +3682,63 @@ else
   assert_ps_parity ".ps1 gate: malformed marker is not fresh"      marker-malformed      'False'
   assert_ps_parity ".ps1 gate: ALLOW_DIRECT bypasses entirely"     marker-override       'True'
 
-  echo "  SKIP  .ps1 end-to-end via hooks/stride-lite-hook.ps1: blocked by the pre-existing"
-  echo "        @(\$input) stdin defect, which predates this change"
+  # --- .ps1 END TO END, as a real subprocess (D215) ---------------------
+  #
+  # This was skipped because the .ps1 read stdin with `@($input)`, which is
+  # populated only for a PowerShell-internal pipeline -- for the OS-level pipe
+  # the harness actually uses it was empty, so the script hit its own
+  # empty-payload guard and exited 0 without doing anything. The documented
+  # hook auto-fire had never worked on native Windows, and because it exits 0
+  # nothing reported it.
+  #
+  # Now that stdin reaches it, drive the WHOLE script rather than its extracted
+  # functions: that is the only way to cover parameter binding, the stdin read
+  # and the routing together, which is exactly where the defect lived.
+  E2E_DIR="$PS_PARITY_DIR/e2e"
+  mkdir -p "$E2E_DIR/g" "$E2E_DIR/.stride-lite"
+  printf '# The E2E Goal\n'  > "$E2E_DIR/g/goal.md"
+  printf '# The E2E Task\n'  > "$E2E_DIR/g/task1.md"
+  printf '## before_task\n\n```bash\necho "BT:$HOOK_NAME:$TASK_TITLE:$GOAL_TITLE"\n```\n\n## after_task\n\n```bash\necho "AT:$HOOK_NAME"\n```\n\n## after_goal\n\n```bash\necho "AG:$HOOK_NAME"\n```\n' \
+    > "$E2E_DIR/.stride_lite.md"
+  printf '{"session_id":"t","started_at":"%s","pid":1}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    > "$E2E_DIR/.stride-lite/.orchestrator_active"
+
+  _ps_e2e() {  # $1 = phase, $2 = payload -> $PS_E2E_OUT / $PS_E2E_ERR / $PS_E2E_RC
+    printf '%s' "$2" | CLAUDE_PROJECT_DIR="$E2E_DIR" "$PS_BIN" -NoProfile \
+      -File "$REPO_ROOT/hooks/stride-lite-hook.ps1" "$1" \
+      > "$E2E_DIR/.out" 2> "$E2E_DIR/.err"
+    PS_E2E_RC=$?
+    PS_E2E_OUT=$(cat "$E2E_DIR/.out")
+    PS_E2E_ERR=$(cat "$E2E_DIR/.err")
+  }
+
+  # Routing condition 1 of 3 — and the payload the defect made invisible.
+  _ps_e2e pre '{"tool_name":"Agent","tool_input":{"subagent_type":"stride-lite:task-explorer","prompt":"g/task1.md"}}'
+  assert_eq ".ps1 e2e: the explorer dispatch exits 0" "$PS_E2E_RC" "0"
+  assert_has ".ps1 e2e: the explorer dispatch runs before_task" "$E2E_DIR/.out" '"hook":"before_task"'
+  # The derived env block reached the command, which is the half the extracted
+  # functions could never prove end to end.
+  assert_has ".ps1 e2e: the derived env block reaches the command" "$E2E_DIR/.err" "BT:before_task:The E2E Task:The E2E Goal"
+  # The binding error the defect emitted must be gone, not merely tolerated.
+  assert_eq ".ps1 e2e: no parameter-binding error on stderr" \
+    "$(printf '%s' "$PS_E2E_ERR" | grep -c 'cannot be bound' || true)" "0"
+
+  # Routing condition 2 of 3.
+  _ps_e2e pre '{"tool_name":"Agent","tool_input":{"subagent_type":"stride-lite:task-reviewer","prompt":"g/task1.md"}}'
+  assert_has ".ps1 e2e: the reviewer dispatch runs after_task" "$E2E_DIR/.out" '"hook":"after_task"'
+
+  # Routing condition 3 of 3 — the PostToolUse goal.md write.
+  _ps_e2e post '{"tool_name":"Write","tool_input":{"file_path":"g/goal.md","content":"## Completion Summary\n"}}'
+  assert_has ".ps1 e2e: the goal.md write runs after_goal" "$E2E_DIR/.out" '"hook":"after_goal"'
+
+  # A non-matching payload still fires nothing, so the routing above is
+  # selective rather than the script running on anything it is handed.
+  _ps_e2e pre '{"tool_name":"Agent","tool_input":{"subagent_type":"general-purpose","prompt":"x"}}'
+  assert_eq ".ps1 e2e: an unrelated dispatch fires nothing" "$PS_E2E_OUT" ""
+  # And an empty payload is still the silent no-op the contract promises.
+  _ps_e2e pre ''
+  assert_eq ".ps1 e2e: an empty payload still exits 0" "$PS_E2E_RC" "0"
+  assert_eq ".ps1 e2e: an empty payload still emits nothing" "$PS_E2E_OUT" ""
 fi
 
 # --- the workflow SKILL.md documents every key it exports ---
