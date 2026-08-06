@@ -23,3 +23,9 @@ Thumbs.db
 # Deliberately NOT .stride/ — that directory belongs to the full Stride
 # plugin and a project may have both installed.
 .stride-lite/
+
+# stride-exploratory-testing artifacts: session sheets, backlog, coverage, and
+# the regression checks /harden stages. Transient working output, and a staged
+# check lives OUTSIDE the test tree by design so the project's gate never runs
+# it — committing them would defeat both properties.
+.exploratory/

@@ -39,6 +39,20 @@ nope() {
   echo "        actual:   $3" >&2
 }
 
+# Fixed-string containment against a FILE. Takes a path, not a captured string:
+# these haystacks are whole document sections, and passing one through "$(cat)"
+# makes every assertion's outcome depend on shell word-splitting of the
+# document's own punctuation.
+assert_has() {
+  local label="$1" file="$2" needle="$3"
+  if [ ! -s "$file" ]; then
+    nope "$label" "a non-empty haystack at $file" "file missing or empty"
+  elif grep -qF -- "$needle" "$file"; then
+    ok "$label"
+  else
+    nope "$label" "contains: $needle" "not found in $file"
+  fi
+}
 assert_eq() {
   local label="$1"
   local actual="$2"
@@ -1237,8 +1251,8 @@ else
     "names=[$TELEM_NAMES] steps=[$TELEM_STEPS]"
 fi
 
-assert_eq "the telemetry vocabulary names seven steps" \
-  "$(printf '%s\n' "$TELEM_NAMES" | grep -c .)" "7"
+assert_eq "the telemetry vocabulary names nine steps" \
+  "$(printf '%s\n' "$TELEM_NAMES" | grep -c .)" "9"
 
 # stride's names must NOT appear — they describe hooks stride-lite cannot run.
 TELEM_FOREIGN=""
@@ -1352,12 +1366,12 @@ awk '/^[ \t]*```json$/ { inb=1; n=0; next }
 while IFS= read -r _n; do
   [ -n "$_n" ] || continue
   TELEM_BLOCK_COUNT=$(( TELEM_BLOCK_COUNT + 1 ))
-  [ "$_n" -eq 7 ] || TELEM_BAD_BLOCK="$TELEM_BAD_BLOCK [block $TELEM_BLOCK_COUNT has $_n entries]"
+  [ "$_n" -eq 9 ] || TELEM_BAD_BLOCK="$TELEM_BAD_BLOCK [block $TELEM_BLOCK_COUNT has $_n entries]"
 done < "$_telem_blocks_file"
 
 assert_eq "the skill carries four telemetry JSON blocks (contract + three iterations)" \
   "$TELEM_BLOCK_COUNT" "4"
-assert_eq "every telemetry JSON block carries exactly seven entries" "$TELEM_BAD_BLOCK" ""
+assert_eq "every telemetry JSON block carries exactly nine entries" "$TELEM_BAD_BLOCK" ""
 
 # Bracket balance per block — a truncated block is the failure a count alone misses.
 TELEM_UNBALANCED="$(awk '/^[ \t]*```json$/ { inb=1; o=0; c=0; t=0; next }
@@ -1381,6 +1395,570 @@ assert_eq "no dispatched telemetry entry carries a skip reason" "${TELEM_DISPATC
 # be one the script emits. The tool grant is pinned too — this agent triages a
 # failure, so giving it the ability to act on a misdiagnosis is the one change
 # that would make it dangerous.
+
+echo ""
+echo "gated exploratory-testing steps (6a / 6b)"
+
+# ---------------------------------------------------------------------------
+# Steps 6a and 6b dispatch a SEPARATE plugin against a RUNNING application.
+# Every assertion here is slice-anchored to one step's own section: the two
+# steps share vocabulary ("gated", "skip", "budget"), so a whole-file grep for
+# any of it passes off the other step's text and proves nothing about the one
+# named in the assertion.
+# ---------------------------------------------------------------------------
+XT_SKILL="$REPO_ROOT/skills/stride-lite-workflow/SKILL.md"
+
+# Slice each step: from its own heading to the next ### heading.
+_slice_step() {
+  awk -v want="$1" '
+    /^### / { inside = (index($0, want) == 1) }
+    inside { print }
+  ' "$XT_SKILL"
+}
+XT_6A="$SANDBOX/step-6a.md"
+XT_6B="$SANDBOX/step-6b.md"
+_slice_step "### Step 6a" > "$XT_6A"
+_slice_step "### Step 6b" > "$XT_6B"
+
+# A guard on the guards: an awk change that silently emptied either slice would
+# turn every grep -qv below into a free pass. Assert non-empty FIRST, and assert
+# the slices are disjoint -- 6a's text must not bleed into 6b's.
+if [ -s "$XT_6A" ] && [ -s "$XT_6B" ]; then
+  ok "both gated-step slices extracted non-empty"
+else
+  nope "both gated-step slices extracted non-empty" "content" "6a/6b empty"
+fi
+assert_eq "the 6a slice does not swallow Step 6b" \
+  "$(grep -c '^### Step 6b' "$XT_6A")" "0"
+assert_eq "the 6b slice does not swallow Step 7" \
+  "$(grep -c '^### Step 7' "$XT_6B")" "0"
+
+# --- Both steps are gated, and the gate is a conjunction, not a preference ---
+for _step in 6a 6b; do
+  eval "_f=\$XT_$(printf '%s' "$_step" | tr 'a-z' 'A-Z')"
+  assert_has "Step $_step declares itself optional and gated" "$_f" \
+    "optional and gated"
+  # THREE conditions, ANDed. A gate documented as "any of" would let a dispatch
+  # proceed on one condition -- for 6a that means dispatching against a live app
+  # without the safety affirmative.
+  # Count ONLY in the gate preamble -- before the first #### subheading. Step 6b
+  # also numbers its three dispositions, and a whole-section count sums the two
+  # into 6, which is a number no rule in the step actually asserts.
+  assert_eq "Step $_step states all three gate conditions" \
+    "$(awk '/^#### /{exit} /^[0-9]\. /{n++} END{print n+0}' "$_f")" "3"
+  assert_has "Step $_step skips with no failure when the gate is closed" "$_f" \
+    "no failure"
+  # The decision summary is the table a reader consults under time pressure; a
+  # step whose prose says "skip" and whose table omits the row is the shape that
+  # gets skipped wrongly.
+  assert_has "Step $_step carries a decision summary" "$_f" \
+    "#### Decision summary"
+done
+
+# --- 6a: how the plugin is detected --------------------------------------
+# Executing another plugin's content to test whether it is installed is exactly
+# the probe you do not want; and seeing a surface listed is not permission to run
+# it, which matters most for the router skill sitting in the same list.
+assert_has "6a checks availability without executing plugin content" "$XT_6A" \
+    "Never execute plugin content to probe for it"
+assert_has "6a states detection is not a dispatch licence" "$XT_6A" \
+    "confers no dispatch licence"
+
+# --- 6a: exactly one sanctioned surface, and it is the AGENT ---------------
+# The bare agent name matches four lines in the slice, so it cannot pin the
+# "only sanctioned surface" claim AC3 asks for. Anchor on the exclusivity too.
+assert_has "6a names stride-exploratory-testing:explorer as the surface" \
+  "$XT_6A" 'stride-exploratory-testing:explorer'
+assert_has "6a names it as the ONLY sanctioned surface" "$XT_6A" \
+  "and nothing else"
+
+# Every human-requiring surface must be named. Naming them individually matters:
+# a reader who finds only a general "do not dispatch commands" rule has to
+# decide for themselves whether the router skill counts, and the router is the
+# one reached by mistake because the bare plugin name resolves to it.
+# Delimit the needle with BOTH backticks and the leading slash. Bare
+# "stride-exploratory-testing:explore" is a substring of the SANCTIONED agent's
+# name, ":explorer", so an undelimited needle is satisfied by the very surface
+# this step tells you to use -- the assertion would pass with the forbidden row
+# deleted outright.
+for _forbidden in explore pair recon nightmare-headline; do
+  assert_has "6a forbids /$_forbidden by name" "$XT_6A" \
+    '`/stride-exploratory-testing:'"$_forbidden"'`'
+done
+
+# Each forbidden surface needs its OWN reason. A shared "these need a human"
+# blanket rots the moment one surface changes, and gives a reader nothing to
+# re-verify against when the other plugin releases.
+XT_FORBIDDEN_TABLE="$SANDBOX/xt_forbidden.txt"
+awk '/\| Surface \| Why it needs a human \|/,/^$/' "$XT_6A" > "$XT_FORBIDDEN_TABLE"
+if [ -s "$XT_FORBIDDEN_TABLE" ]; then
+  ok "the forbidden-surface table extracted non-empty"
+else
+  nope "the forbidden-surface table extracted non-empty" "rows" "(empty)"
+fi
+# Count rows that actually NAME a surface -- not every line beginning with a
+# pipe, which folds in the header and would report a populated table for one
+# that lost every row.
+# "router skill" also appears in the decision-summary row, so assert it inside
+# the table -- the row that carries the REASON AC3 asks for.
+assert_has "6a forbids the router skill by name" "$XT_FORBIDDEN_TABLE" \
+    "router skill"
+assert_eq "the forbidden-surface table has one row per surface" \
+  "$(grep -cE '^\| (`/?stride-exploratory-testing|The `stride-exploratory-testing)' "$XT_FORBIDDEN_TABLE")" "5"
+
+# The rule must be stated as a PRINCIPLE, not only as a list -- a list cannot
+# classify a surface the next plugin release adds.
+assert_has "6a gives a principle that generalizes past the list" "$XT_6A" \
+    "without a human"
+assert_has "6a says to re-verify the table when the other plugin changes" "$XT_6A" \
+    "version changes"
+
+# --- 6a runs at most once per task, on a settled diff ---------------------
+# Without this, a task that loops the reviewer three times runs three exploratory
+# sessions -- two of them against a diff that is about to change, spending probe
+# budget on code that will not ship.
+assert_has "6a enters at most once per task, on a settled diff" "$XT_6A" \
+    "at most once per task"
+assert_has "6a stays out of a changes_requested iteration" "$XT_6A" \
+    "go straight to Step 7 and let the loop run"
+# Reading Step 7's verdict early is a borrow, not a transfer -- say so, or the
+# two steps end up both believing they own the counter.
+assert_has "6a leaves the loop, counter and cap with Step 7" "$XT_6A" \
+    "Step 7 still owns the loop, the counter and the cap"
+
+# Every gate condition needs a row in the decision table too. Prose that says
+# "skip" and a table that omits the row is the shape a reader under time pressure
+# resolves by consulting the table -- and then not skipping.
+XT_6A_TABLE="$SANDBOX/xt_6a_table.txt"
+awk '/^\| Condition \| Action \|/{f=1} f && !/^\|/{exit} f' "$XT_6A" > "$XT_6A_TABLE"
+# `- (none)` is the task template's rendering of an empty section, so a gate that
+# stops recognising it dispatches a live-app session for EVERY task -- the
+# most-taken path, and the first of the four edge cases the task itself lists.
+assert_has "6a's first gate condition excludes the (none) placeholder" "$XT_6A" \
+    "not \`- (none)\`"
+assert_has "the 6a table has a row for a task with no manual tests" "$XT_6A_TABLE" \
+    "- (none)"
+assert_has "the 6a table has a row for a missing plugin" "$XT_6A_TABLE" \
+    "Plugin not available"
+assert_has "the 6a table has a row for an undispatchable explorer" "$XT_6A_TABLE" \
+    "cannot dispatch the \`explorer\` agent"
+assert_has "the 6a table has a row for a changes_requested iteration" "$XT_6A_TABLE" \
+    "Do not enter"
+assert_has "the 6a table has a row for a missing affirmative" "$XT_6A_TABLE" \
+    "Never ask now"
+
+# --- 6a: dispatch capability is its own gate condition --------------------
+# The explorer ships in a DIFFERENT plugin on its own cadence, so "the agents are
+# always available" -- true of stride-lite's own five subagents -- does not carry.
+assert_has "6a checks it can actually dispatch the explorer" "$XT_6A" \
+    "the \`Agent\` tool is present"
+assert_has "6a does not assume the explorer's availability" "$XT_6A" \
+    "do not assume it"
+# The affirmative sits at dispatch level, not in the gate, so a drive that never
+# reached a dispatch and a drive that reached one unauthorized stay distinct.
+# NOT "not a fourth gate condition" -- the gitignore precondition reuses that
+# phrase, so the needle survives deleting the affirmative paragraph entirely.
+assert_has "6a places the affirmative at dispatch level, not in the gate" "$XT_6A" \
+    "we got there and had no authorization"
+
+# --- 6a: the safety affirmative ------------------------------------------
+assert_has "6a requires an authorized-and-non-production affirmative" "$XT_6A" \
+    "not production"
+assert_has "6a forbids inferring the affirmative" "$XT_6A" \
+    "Never infer it"
+# The /recon table row also contains this phrase, so anchor on the affirmative
+# subsection's own sentence.
+assert_has "6a forbids supplying it on the user's behalf" "$XT_6A" \
+    "Never infer it and never supply it on the user's behalf"
+# Naming the collection point is what makes "never ask now" actionable rather
+# than a dead end: without a named earlier point the rule reads as "you may
+# never have it", and an agent under pressure resolves that by inferring one.
+assert_has "6a names Step 0 as the collection point" "$XT_6A" \
+    "Collect it at Step 0"
+assert_has "6a resolves a missing affirmative to the skip, not a prompt" "$XT_6A" \
+    "Do not ask now"
+
+# And Step 0 must actually collect it, or the pointer dangles.
+XT_STEP0="$SANDBOX/xt_step0.txt"
+_slice_step '### Step 0' > "$XT_STEP0"
+assert_has "Step 0 collects the authorized/non-production answer" "$XT_STEP0" \
+    "authorized to test and is not production"
+assert_has "Step 0 refuses to default to authorized" "$XT_STEP0" \
+    "never default to authorized"
+assert_has "Step 0 asks for a seed-data pointer, never pasted credentials" "$XT_STEP0" \
+    "never pasted credentials"
+
+# --- 6a: the session budget ----------------------------------------------
+assert_has "6a requires a budget on every dispatch" "$XT_6A" \
+    "Never omit it"
+assert_has "6a pins the explorer's two-argument dispatch shape" "$XT_6A" \
+    "takes exactly two arguments"
+assert_has "6a says how to choose within the band" "$XT_6A" \
+    "Pick from the band"
+# The unit is the installed AGENT's, not this skill's invention. Two plugins
+# release independently, so a hard-coded unit here goes stale silently.
+assert_has "6a reads the unit from the installed contract" "$XT_6A" \
+    "not from this page"
+# NOT the bare word "probes" -- it also appears in "sharpens its probes at no
+# cost" and throughout the ending table, so the bare needle stays green with the
+# only sentence that names the unit deleted.
+assert_has "6a names the current probe-based unit" "$XT_6A" \
+    "native unit is **probes**"
+assert_has "6a names the usable band, not just the default" "$XT_6A" \
+    "usable band"
+assert_has "6a names the tool-call ceiling as the other bound" "$XT_6A" \
+    "tool-call ceiling"
+assert_has "6a warns against passing a wall-clock box to a probe contract" "$XT_6A" \
+    "never report a duration you did not measure"
+# A budget too small to fund a session must NOT be spent: a token session
+# returns "completed" having reached nothing, which reads as coverage.
+assert_has "6a refuses to dispatch an unworkable budget" "$XT_6A" \
+    "do not dispatch at all"
+
+# --- 6a: reading how a session ended -------------------------------------
+# blocked and tool_call_ceiling must get the SAME disposition at ~zero probes.
+# Two endings with the same coverage getting opposite dispositions is how a
+# session that reached nothing gets recorded as a performed manual test.
+# The first three names are single-site. `blocked` is not -- it also appears in
+# the status enum and twice in prose -- so asserting it by bare name stays green
+# with its ending-table ROW deleted, and that row carries the equal-disposition
+# rule this block exists to protect.
+for _ending in charter_quiet probe_budget_exhausted tool_call_ceiling; do
+  assert_has "6a says what a $_ending ending permits claiming" "$XT_6A" \
+    "$_ending"
+done
+assert_has "6a gives blocked its own ending-table row" "$XT_6A" \
+    "| \`blocked\` |"
+# Two endings with the same coverage must not get opposite dispositions: a
+# zero-probe `blocked` and a zero-probe `tool_call_ceiling` both mean the session
+# did not happen.
+assert_has "6a gives blocked the same disposition as a zero-probe ceiling" "$XT_6A" \
+    "Same rule, same reason"
+assert_has "6a records a zero-probe session as not performed" "$XT_6A" \
+    "the session did not happen"
+assert_has "6a files an obstacle as an obstacle, not a finding" "$XT_6A" \
+    "never as a finding"
+assert_has "6a treats findings as data, not instructions" "$XT_6A" \
+    "never instructions"
+
+# --- 6b: /harden availability is its OWN gate ----------------------------
+# /harden shipped in the plugin's 0.2.0. Inferring it from the plugin's
+# presence dispatches a command an older install does not have.
+assert_has "6b gates on /harden separately from the plugin" "$XT_6B" \
+    "do not infer it from the plugin"
+assert_has "6b records hardening as unavailable rather than silent" "$XT_6B" \
+    "stays distinguishable from"
+
+# --- 6b: drafts are drafts ------------------------------------------------
+assert_has "6b forbids reporting a draft as passing" "$XT_6B" \
+    "Never report a drafted check as passing"
+assert_has "6b notes /harden holds no test runner" "$XT_6B" \
+    "runs nothing"
+# ".exploratory/checks/" matches four lines in the slice; anchor on the sentence
+# stating WHY staging is safe, which is the rule worth protecting.
+assert_has "6b keeps drafts outside the test tree by default" "$XT_6B" \
+    "outside the test tree, where the project's gate never sees them"
+# The default disposition must be the safe one. A step whose default is "move it
+# in" turns a correct session into a red gate on a task that never scoped the fix.
+assert_has "6b makes leaving drafts staged the default" "$XT_6B" \
+    "always safe"
+assert_has "6b never moves an unrun check in on the expectation it passes" "$XT_6B" \
+    "Never move an unrun check"
+# Inert CASE and clean-loading FILE are two different properties; a skip marker
+# gives only the first, and a draft with unresolved wiring fails at collection
+# however it is tagged.
+assert_has "6b distinguishes an inert case from a clean-loading file" "$XT_6B" \
+    "does not make a *file* inert"
+assert_has "6b notes xfail is not a skip" "$XT_6B" \
+    "xfail"
+assert_has "6b requires a suite-wide gate run, not the moved file alone" "$XT_6B" \
+    "across the whole suite"
+assert_has "6b reverts rather than leaving the gate red" "$XT_6B" \
+    "revert everything"
+# /harden suffixes collisions only inside its own staging dir, so the overwrite
+# check on the MOVE is the workflow's own responsibility.
+assert_has "6b owns the overwrite check on the move" "$XT_6B" \
+    "Nothing is protecting the move **you** perform"
+# The decision-summary row repeats this, so anchor on the prose rule that also
+# states WHY -- a rule that turns on a judgement call resolves toward not doing it.
+assert_has "6b re-runs the reviewer when a check entered the tree" "$XT_6B" \
+    "still unreviewed executable code"
+
+# --- The Bash-scope carve-out exists and is bounded ----------------------
+# AC7 needs the project's gate command run, but the scope list forbids it
+# outright. A contradiction between two sections of one skill is resolved by
+# whichever the reader happens to hit first -- so the carve-out must be written
+# where the prohibition is, not only where the need is.
+XT_BASH="$SANDBOX/xt_bash.txt"
+awk '/^## Bash scope/,/^## Edge cases/' "$XT_SKILL" > "$XT_BASH"
+if [ -s "$XT_BASH" ]; then
+  ok "the Bash scope section extracted non-empty"
+else
+  nope "the Bash scope section extracted non-empty" "content" "(empty)"
+fi
+assert_has "the gate-command prohibition carries the Step 6b exception" "$XT_BASH" \
+    "One narrow exception, Step 6b only"
+assert_has "the carve-out is scoped to Step 6b's move branch" "$XT_BASH" \
+    "only on the move branch"
+# The distinguishing rule: the skill never COMPOSES a test command, it re-runs
+# the user's own. That is what keeps `mix test` closed as a skill-body capability
+# while still permitting the one verification a tree entry needs.
+assert_has "the carve-out composes nothing, it re-runs the user's own block" "$XT_BASH" \
+    "never composed here"
+assert_has "the carve-out still forbids a command this skill chose" "$XT_BASH" \
+    "this skill chose"
+# Bounded in both directions: naming what it does NOT license is what keeps a
+# one-line exception from becoming a general licence to run the suite.
+assert_has "the carve-out excludes a general test run" "$XT_BASH" \
+    "not a general test run"
+assert_has "the carve-out excludes re-running after_task" \
+  "$XT_BASH" 'not re-running `## after_task`'
+
+# Step 6b moves a file into the test tree and must be able to revert it. The
+# revert has no non-Bash equivalent, so without a sanctioned command a compliant
+# agent is pushed into the "clear the marker and stop" pitfall -- from inside a
+# step that must never fail anything.
+assert_has "the scope sanctions Step 6b's copy into the test tree" "$XT_BASH" \
+    "into the project's test tree"
+assert_has "the scope sanctions the revert Step 6b mandates" "$XT_BASH" \
+    "on revert"
+assert_has "the scope copies rather than moves, so a revert is possible" "$XT_BASH" \
+    "Copy rather than move"
+# The "ONLY sanctioned rm" claim became false the moment a second rm was
+# sanctioned; an unamended absolute is worse than no claim.
+assert_has "the scope's rm claim was amended, not left false" "$XT_BASH" \
+    "only two"
+# The pre-move existence check is in the TEST TREE, not under .exploratory/, so
+# scoping it "under .exploratory/checks/" excluded one of the entry's own uses.
+assert_has "the scope sanctions the pre-move check on its real path" "$XT_BASH" \
+    "the single target path Step 6b is about to write"
+assert_has "the scope covers reading a root-level project file" "$XT_BASH" \
+    "Reading a root-level project file"
+assert_has "the scope sanctions reading back what /harden staged" "$XT_BASH" \
+    "for reading back what \`/harden\` staged"
+# Every narrow carve-out here carries a confinement clause; an entry without one
+# is how a carve-out becomes a general licence.
+#
+# Counting the CLAUSE was inverted: adding two unconfined bullets kept the count
+# at 8 and passed, while adding a properly-confined one broke it. Check the
+# property per bullet instead -- every step-scoped carve-out must confine itself.
+XT_UNCONFINED=""
+while IFS= read -r _b; do
+  case "$_b" in
+    *"Step 6a"*|*"Step 6b"*|*"Step 8"*|*"Step 0"*) ;;
+    *) continue ;;
+  esac
+  case "$_b" in
+    *"Forbidden elsewhere in the skill body"*|*"ONLY sanctioned"*|*"only two"*) ;;
+    *) XT_UNCONFINED="$XT_UNCONFINED [${_b%%—*}]" ;;
+  esac
+done <<EOF_SCOPE
+$(grep '^- ✅' "$XT_BASH")
+EOF_SCOPE
+assert_eq "every step-scoped Bash carve-out confines itself" "$XT_UNCONFINED" ""
+
+# And pin the total, so a brand-new carve-out cannot slip in unnoticed even if it
+# names no step. The number is the point: changing it must be deliberate.
+assert_eq "the Bash allow-list has not grown silently" \
+  "$(grep -c '^- ✅' "$XT_BASH")" "14"
+
+# --- The user's project must actually ignore .exploratory/ ----------------
+# This repo's own .gitignore protects this repo. Sessions write into the USER's
+# project, and .gitignore is inert for a path once it is tracked -- so a mention
+# at Step 0 that nothing verifies leaves the artifacts unprotected.
+assert_has "6a checks the user's project ignores .exploratory/" "$XT_6A" \
+    "confirm \`.exploratory/\` is actually ignored"
+assert_has "an un-ignored .exploratory/ is a clean skip, not a failure" "$XT_6A" \
+    "unmet means a clean skip with a recorded reason"
+assert_has "6a never edits the user's .gitignore to satisfy the check" "$XT_6A" \
+    "a check that repairs its own subject is not a check"
+# The heading and the policy are not the instruction. Without this the
+# precondition reduces to a heading with a policy and no action.
+assert_has "6a says what to actually do when the entry is missing" "$XT_6A" \
+    "skip Step 6a and record why"
+# The read must be designated a Read, or the Bash-scope pitfall turns it into a
+# halt -- from inside a step that must never fail anything.
+assert_has "6a designates the read as a Read-tool operation" "$XT_6A" \
+    "not a Bash call"
+
+# --- .exploratory/ is gitignored ------------------------------------------
+XT_GITIGNORE="$REPO_ROOT/.gitignore"
+assert_eq "the repo gitignores .exploratory/" \
+  "$(grep -cx '\.exploratory/' "$XT_GITIGNORE")" "1"
+# Staged checks live outside the test tree on purpose; committing them defeats
+# that, so the entry needs the reason attached or a later reader removes it.
+assert_has "the .exploratory/ entry says why it is ignored" "$XT_GITIGNORE" \
+    "OUTSIDE the test tree"
+
+# --- Neither gated step can stop the run (AC2, stated as a negative) ------
+# The criterion whose whole content is an absence needs a negative guard. The
+# hard-stop vocabulary the rest of the skill uses to end a drive must not appear
+# in either slice -- a gated step that can clear the marker is a gated step that
+# can end the goal drive, which is the one thing these two must never do.
+# Scan the WHOLE slice case-insensitively. An earlier version anchored on
+# "list marker then bold", which both gated steps are too prose-heavy for: a
+# plain sentence saying "clear the marker and stop the workflow" slipped through.
+XT_STOPS=""
+# NO exclusion. Earlier versions exempted the hazard subsection so it could
+# describe the stop it prevents -- but any exemption is a hole, and a size bound
+# on it cannot catch a one-line injection into the exempt region. The hazard
+# paragraph was reworded instead ("end the drive"), so the whole slice can be
+# scanned and there is nothing left to exempt.
+# STEMMED, not fixed-string. A fixed list of four phrasings missed the section's
+# own house inflection ("clears the marker and stops the whole goal drive") --
+# so the guard passed because of how the prose happened to be conjugated, not
+# because there was nothing to find. Both hazard paragraphs were also reworded
+# to avoid this vocabulary entirely, so the guard needs no exempt region.
+# Determiners and modifiers are variable groups, not fixed words: "stop this
+# drive", "halt the entire drive" and "stop the goal" are one word away from
+# forms already covered, and reachable by ordinary prose editing rather than by
+# adversarial phrasing. The marker branch likewise allows a qualifier, so
+# "clear the activation marker" cannot slip past a fixed adjacency.
+XT_STOP_RE='(clear|clears|clearing) (the |this |that )?[^.]{0,24}marker|(stop|stops|stopping|end|ends|ending|halt|halts|halting|abort|aborts|aborting|terminate|terminates|terminating|abandon|abandons|abandoning) (the|this|that) (whole |entire |current )?(workflow|goal drive|goal|drive|run|task)'
+for _f in "$XT_6A" "$XT_6B"; do
+  if grep -qiE -- "$XT_STOP_RE" "$_f"; then
+    XT_STOPS="$XT_STOPS [$(basename "$_f"): $(grep -ioE -- "$XT_STOP_RE" "$_f" | head -1)]"
+  fi
+done
+assert_eq "neither gated step instructs the reader to stop the run" "$XT_STOPS" ""
+
+# --- The move branch's command vocabulary is closed -----------------------
+# The suite pinned that the carve-out entries are PRESENT, never that the
+# allow-list covers every operation Step 6b's prose actually mandates. It did
+# not: an earlier draft sanctioned reverting a directory `cp` cannot create and
+# no entry sanctioned creating, so a draft targeting a new directory left the
+# branch with no legal command -- and the Bash-scope pitfall turns that into a
+# halted drive from inside a step that must never fail anything.
+# Exclude the one line that names another command's allow-list rather than this
+# workflow's own vocabulary -- Step 6b legitimately reports that /harden's Bash
+# grant is `date` and `mkdir`, which is a fact about /harden, not an instruction
+# to this workflow. Narrow, single-purpose, and guarded for size below.
+# Strip the CLAUSE, not the line. Dropping the whole line also drops whatever
+# else shares it -- and since that line already contains `mkdir`, a real
+# instruction appended to the same sentence became invisible. Same shape as the
+# subsection exemption removed in an earlier round, one sentence smaller.
+XT_6B_OWN="$SANDBOX/step-6b-own-commands.txt"
+sed 's/Its own allow-list is `date` and `mkdir`;//' "$XT_6B" > "$XT_6B_OWN"
+# The clause must actually have been present and actually have been removed --
+# a renamed clause would silently leave `mkdir` in the haystack and fail loudly,
+# which is the safe direction, but a silent no-op strip would not.
+assert_eq "the closure check strips exactly the /harden allow-list clause" \
+  "$(grep -c 'Its own allow-list is' "$XT_6B")-$(grep -c 'Its own allow-list is' "$XT_6B_OWN")" \
+  "1-0"
+XT_6B_CMDS=""
+for _cmd in mkdir mv rmdir rsync install ln; do
+  grep -qiE -- "\`$_cmd|\b$_cmd -" "$XT_6B_OWN" && XT_6B_CMDS="$XT_6B_CMDS [$_cmd]"
+done
+assert_eq "Step 6b's prose names no command outside its two-command allow-list" \
+  "$XT_6B_CMDS" ""
+# And it must say so, rather than leaving the closure implicit.
+assert_has "the scope states the move branch's whole vocabulary" "$XT_BASH" \
+    "no \`mkdir\`, no \`mv\`, no \`rmdir\`"
+assert_has "6b defers rather than creating a missing target directory" "$XT_6B" \
+    "do not create it: take disposition 3"
+assert_has "6b's revert is exactly one file" "$XT_6B" \
+    "which is exactly one file"
+
+# --- The escalation lives in Step 7, which owns the loop and the cap -------
+XT_STEP7="$SANDBOX/xt_step7.txt"
+_slice_step "### Step 7" > "$XT_STEP7"
+assert_has "Step 7 carries the session-escalation branch" "$XT_STEP7" \
+    "Session-escalation branch"
+assert_has "the escalation reuses the existing cap rather than adding one" "$XT_STEP7" \
+    "same \`max_review_iterations\`"
+# A re-run that stopped on its budget before reaching the defect has verified
+# nothing; reading it as confirmation is the failure this pins.
+assert_has "the escalation requires the re-run to re-reach the defect" "$XT_STEP7" \
+    "must actually re-reach the defect"
+assert_has "a discovered Critical never enters the loop" "$XT_STEP7" \
+    "never enters this branch"
+# The reviewer agent owns ## Review Report; the skill body never writes there.
+assert_has "the escalation does not hand-edit the Review Report" "$XT_STEP7" \
+    "Do not edit \`## Review Report\`"
+
+# --- Provenance is decided from agent-owned artifacts, never app output ----
+assert_has "6a decides provenance from the workflow's own artifacts" "$XT_6A" \
+    "never from the application's text"
+# stride reconstructs a line-exact change set from a claim-time base ref.
+# stride-lite has none, and guessing one is worse than admitting the gap.
+assert_has "6a admits it cannot reconstruct a change set" "$XT_6A" \
+    "Do not reconstruct one"
+assert_has "6a falls back to discovered when there is no Review Report" "$XT_6A" \
+    "No \`## Review Report\` at all"
+
+# --- Red flags names the surface a reader is most likely to reach for ------
+XT_RED="$SANDBOX/xt_red.txt"
+awk '/^## Red flags/{f=1;next} f && /^## /{exit} f' "$XT_SKILL" > "$XT_RED"
+# Same trap: the Red flags entry legitimately names the sanctioned agent as the
+# remedy, so any needle ":explorer" satisfies proves nothing. Anchor on the
+# entry's own reasoning -- why /explore is the tempting mistake.
+assert_has "Red flags warns against reaching for /explore" "$XT_RED" \
+    "headline command"
+assert_has "Red flags warns the bare plugin name hits the router" "$XT_RED" \
+    "resolves to the router skill"
+assert_has "Red flags rejects inferring authorization from localhost" "$XT_RED" \
+    "localhost"
+assert_has "Red flags rejects calling a draft covered" "$XT_RED" \
+    "Drafted, not run"
+
+# --- Step 8 records both outcomes in the Completion Summary ---------------
+# Telemetry records whether a step ran; the summary records what it found. A
+# dispatched session whose result appears nowhere in prose is the shape that
+# lets "manual tests performed" stand on a session that reached nothing.
+XT_STEP8="$SANDBOX/xt_step8.txt"
+awk '/^### Step 8 /{f=1;next} f && /^#### Workflow telemetry/{exit} f' "$XT_SKILL" > "$XT_STEP8"
+assert_has "Step 8 records the exploratory outcome" "$XT_STEP8" \
+    "The exploratory-testing outcome"
+assert_has "Step 8 records a partial session as partial" "$XT_STEP8" \
+    "rather than folded into"
+assert_has "Step 8 redacts findings rather than copying them" "$XT_STEP8" \
+    "never copy a credential"
+assert_has "Step 8 records the hardening outcome" "$XT_STEP8" \
+    "The hardening outcome"
+assert_has "Step 8 phrases drafts as drafted, not run" "$XT_STEP8" \
+    "drafted, not run"
+assert_has "Step 8 carries a discovered Critical into goal.md" "$XT_STEP8" \
+    "Any discovered Critical"
+
+# --- AGENTS.md keeps the no-network contract intact -----------------------
+# The integration dispatches another plugin's agent, which can reach a running
+# app. The contract is unchanged -- stride-lite still opens no socket -- but the
+# distinction is subtle enough that a later reader could take it as licence to
+# add an HTTP client "since we already talk to the app now."
+XT_AGENTS="$REPO_ROOT/AGENTS.md"
+assert_has "AGENTS.md states a dispatch is not a network call" "$XT_AGENTS" \
+    "not a network call"
+assert_has "AGENTS.md refuses it as a precedent for an API client" "$XT_AGENTS" \
+    "a precedent for one"
+assert_has "AGENTS.md keeps the other plugin optional in both directions" "$XT_AGENTS" \
+    "No hard dependency on another plugin"
+assert_has "AGENTS.md forbids probing by executing plugin content" "$XT_AGENTS" \
+    "check availability only"
+assert_has "AGENTS.md records that neither gated step can fail a task" "$XT_AGENTS" \
+    "able to fail a task"
+
+# --- The README's step count tracks the vocabulary ------------------------
+# README.md states how many loop steps the telemetry records. It is a hand-
+# maintained number in a different file, so it drifts silently the moment the
+# vocabulary changes -- which is exactly what happened to it this commit.
+XT_README="$REPO_ROOT/README.md"
+assert_eq "the README's telemetry step count matches the vocabulary" \
+  "$(grep -oE 'records all [a-z]+ loop steps' "$XT_README" | head -1)" \
+  "records all nine loop steps"
+# And the two gated sub-steps are documented where a reader looks for the loop,
+# not only inside the skill that implements them.
+for _sub in "Step 6a" "Step 6b"; do
+  assert_eq "the README documents $_sub" \
+    "$(grep -c "$_sub —" "$XT_README")" "1"
+done
+
+# --- Both new telemetry names are wired into the vocabulary ---------------
+# Without this, the two most-skippable steps in the workflow are the two with
+# no record of having been skipped.
+for _name in exploratory harden; do
+  assert_eq "the telemetry vocabulary carries a \`$_name\` row" \
+    "$(printf '%s\n' "$TELEM_NAMES" | grep -cx "$_name")" "1"
+done
 
 echo ""
 echo "hook-diagnostician agent contract"
