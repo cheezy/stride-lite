@@ -267,7 +267,82 @@ Append a `## Completion Summary` section to the active task file at EOF. The sec
   - **Review ran** → a reference to the embedded review JSON's `status`, which is `approved` on this path by contract, since Step 7 only reaches Step 8 on an approval.
   - **Review skipped** → say so plainly and give the reason, instead of a status. Do not write "approved" for a review that never happened.
 - **The matrix decision and every step it skipped** — see below. Omit this bullet only when the matrix skipped nothing.
-- **The enrichment outcome**, as its own bullet — either `Enrichment: not needed — all four trigger sections were already populated`, or `Enrichment: dispatched stride-lite:task-enricher — filled <sections>; <section> could not be grounded and remains (none)`. Enrichment is a different gate from the matrix, so it never borrows a matrix skip reason; the vocabulary below stays closed to what the matrix itself can produce.
+- **The enrichment outcome**, as its own bullet — either `Enrichment: not needed — all four trigger sections were already populated`, or `Enrichment: dispatched stride-lite:task-enricher — filled <sections>; <section> could not be grounded and remains (none)`. Enrichment is a different gate from the matrix, so it never borrows a matrix skip reason; the matrix's own skip vocabulary — in [Recording a skipped step](#recording-a-skipped-step), below the telemetry section — stays closed to what the matrix itself can produce.
+- **A `### Workflow telemetry` subsection** — the last thing in the summary. See below.
+
+#### Workflow telemetry
+
+A Completion Summary that simply does not mention the explorer is ambiguous: it could mean the matrix skipped it, or that the agent forgot. Nothing in the file distinguishes those, and the second is exactly the shortcut the record exists to catch. So every step is recorded every time, including the ones that did not run.
+
+##### Step name vocabulary
+
+Seven names, one per step the loop actually performs. Do not invent names, and do not borrow stride's — its `after_doing` and `before_review` do not exist here, and telemetry naming a step this plugin has no way to run cannot be compared against anything real.
+
+| Step name | What it records | Loop step |
+|---|---|---|
+| `enricher` | The `stride-lite:task-enricher` dispatch | Step 1a |
+| `before_task` | The `## before_task` hook execution | Step 2 |
+| `explorer` | The `stride-lite:task-explorer` dispatch | Step 3 |
+| `planner` | The in-context implementation outline | Step 3a |
+| `implementation` | Writing the code | Step 4 |
+| `after_task` | The `## after_task` hook execution | Step 5 |
+| `reviewer` | The `stride-lite:task-reviewer` dispatch | Step 6 |
+
+**Record them in the order they occurred**, which is the order above — not the order they were listed anywhere else. Step 0, Step 1, Step 7 and Step 8 have no entries: they are orchestration the agent performs itself rather than dispatches or hook executions, so there is nothing to have skipped.
+
+##### Per-entry schema
+
+| Key | Type | Required | Notes |
+|---|---|---|---|
+| `name` | string | always | One of the seven above |
+| `dispatched` | boolean | always | `true` if the step ran, `false` if it was skipped |
+| `duration_ms` | integer | when dispatched **and measured** | Wall-clock milliseconds |
+| `reason` | string | when `dispatched: false` | Why it was skipped — see below |
+
+**A reason names the condition, never the outcome.** `"explorer was skipped"` restates the `dispatched: false` it sits beside and tells a reader nothing. `"Decision matrix: small complexity, 1 key file → skip-all row"` names the rule that fired, which is what makes the record auditable after the fact.
+
+**Two skip vocabularies, and they compose rather than compete.** The skip-record bullet above uses a closed token set (`small_task_0_1_key_files`, `small_task_2_plus_key_files`) because the matrix can only produce those two, and a value outside them means the matrix was overridden rather than followed. Telemetry covers more ground than the matrix: `enricher` skips for a reason the matrix has no token for, and `before_task` / `after_task` skip because the dispatch they hook was skipped. So:
+
+- **For a skip the closed table below assigns a token to** — check its *Steps it applies to* column, which is the tie-breaker — lead the telemetry reason with that token, then say what it means: `"small_task_0_1_key_files — decision matrix: small complexity, 1 key file"`. The token keeps the two records greppable as one fact; the prose keeps the telemetry readable on its own.
+- **For every other skip**, prose alone — including `before_task` and `after_task`, which the matrix does cause indirectly but which the table assigns no token to. There is no token to lead with, and inventing one would extend a vocabulary the matrix section declares closed.
+
+**Never invent a duration.** If a step ran but you did not measure it, record `dispatched: true` with no `duration_ms`. A fabricated number is worse than an absent one — it looks like evidence.
+
+**A step that ran more than once keeps one entry.** The review loop can dispatch `reviewer` — and re-run `implementation` and `after_task` — several times for one task. Record a single entry per name with `duration_ms` as the total across dispatches, not one entry per dispatch: the vocabulary is fixed at seven, and a reader counting entries is counting steps, not attempts.
+
+##### Rendering
+
+A table first, then a fenced JSON block, following `stride-lite:task-reviewer`'s precedent of prose-then-structured-block with the JSON last. The table is what a human reads; the JSON is for tooling. Neither is optional, and they must agree.
+
+````markdown
+### Workflow telemetry
+
+| Step | Dispatched | Duration | Reason |
+|---|---|---|---|
+| `enricher` | no | — | All four trigger sections were already populated |
+| `before_task` | yes | 1.2s | |
+| `explorer` | yes | 31s | |
+| `planner` | yes | — | |
+| `implementation` | yes | 18m | |
+| `after_task` | yes | 46s | |
+| `reviewer` | yes | 25s | |
+
+```json
+[
+  {"name": "enricher",       "dispatched": false, "reason": "All four trigger sections were already populated"},
+  {"name": "before_task",    "dispatched": true,  "duration_ms": 1200},
+  {"name": "explorer",       "dispatched": true,  "duration_ms": 31000},
+  {"name": "planner",        "dispatched": true},
+  {"name": "implementation", "dispatched": true,  "duration_ms": 1080000},
+  {"name": "after_task",     "dispatched": true,  "duration_ms": 46000},
+  {"name": "reviewer",       "dispatched": true,  "duration_ms": 25000}
+]
+```
+````
+
+`planner` above is dispatched with no duration — it is an in-context outline, so there is usually nothing to measure. That is the intended shape, not an omission.
+
+**Telemetry carries step names, booleans, durations and skip reasons — nothing else.** No command output, no environment values, no paths outside the project. The Completion Summary is committed, and a skip reason is free text the agent writes: describe the matrix rule in your own words rather than quoting task-file text, which is agent-authored and untrusted.
 
 #### Recording a skipped step
 
@@ -460,7 +535,31 @@ A three-task goal at `docs/implementation/PENDING/add-notifications/` containing
 - **Step 5.** Again no direct execution — the harness auto-fires the `## after_task` hook at Step 6's reviewer dispatch (PreToolUse intercept, blocking). Its bash (e.g., `mix test` and `mix credo --strict`) runs and succeeds; a failure would block the reviewer dispatch until the root cause is fixed.
 - **Step 6.** Dispatch `stride-lite:task-reviewer` with `task1.md` as the prompt. After ~25s the agent appends a `## Review Report` section. The embedded JSON's `status` is `approved`.
 - **Step 7.** Parse the JSON. `status == approved` → proceed to Step 8.
-- **Step 8.** Append a `## Completion Summary` section to task1.md (one-paragraph synthesis + hook results + review status). The matrix skipped nothing on this row, so there is no skip bullet. Check for task2.md: exists. Return to Step 1.
+- **Step 8.** Append a `## Completion Summary` section to task1.md (one-paragraph synthesis + hook results + review status). The matrix skipped nothing on this row, so there is no skip bullet — but the telemetry still records all seven names, and the enricher entry is a skip because task1 arrived fully specified:
+
+  | Step | Dispatched | Duration | Reason |
+  |---|---|---|---|
+  | `enricher` | no | — | All four trigger sections were already populated |
+  | `before_task` | yes | 2.1s | |
+  | `explorer` | yes | 30s | |
+  | `planner` | yes | — | |
+  | `implementation` | yes | 25m | |
+  | `after_task` | yes | 42s | |
+  | `reviewer` | yes | 25s | |
+
+  ```json
+  [
+    {"name": "enricher",       "dispatched": false, "reason": "All four trigger sections were already populated"},
+    {"name": "before_task",    "dispatched": true,  "duration_ms": 2100},
+    {"name": "explorer",       "dispatched": true,  "duration_ms": 30000},
+    {"name": "planner",        "dispatched": true},
+    {"name": "implementation", "dispatched": true,  "duration_ms": 1500000},
+    {"name": "after_task",     "dispatched": true,  "duration_ms": 42000},
+    {"name": "reviewer",       "dispatched": true,  "duration_ms": 25000}
+  ]
+  ```
+
+  Check for task2.md: exists. Return to Step 1.
 
 **Iteration 2 — task2.md (Subscribe to comment broadcasts in BoardLive.Show).**
 
@@ -472,6 +571,30 @@ A three-task goal at `docs/implementation/PENDING/add-notifications/` containing
   ```markdown
   - Decision matrix: `small` complexity, 3 key files → explore-review row.
     - `planner` — skipped: `small_task_2_plus_key_files`
+  ```
+
+  and the matching telemetry. Note `reviewer` ran twice here — the review loop went round once — and the duration is the total across both dispatches:
+
+  | Step | Dispatched | Duration | Reason |
+  |---|---|---|---|
+  | `enricher` | no | — | All four trigger sections were already populated |
+  | `before_task` | yes | 1.9s | |
+  | `explorer` | yes | 28s | |
+  | `planner` | no | — | `small_task_2_plus_key_files` — decision matrix: small complexity, 3 key files |
+  | `implementation` | yes | 40m | |
+  | `after_task` | yes | 88s | |
+  | `reviewer` | yes | 51s | |
+
+  ```json
+  [
+    {"name": "enricher",       "dispatched": false, "reason": "All four trigger sections were already populated"},
+    {"name": "before_task",    "dispatched": true,  "duration_ms": 1900},
+    {"name": "explorer",       "dispatched": true,  "duration_ms": 28000},
+    {"name": "planner",        "dispatched": false, "reason": "small_task_2_plus_key_files — decision matrix: small complexity, 3 key files"},
+    {"name": "implementation", "dispatched": true,  "duration_ms": 2400000},
+    {"name": "after_task",     "dispatched": true,  "duration_ms": 88000},
+    {"name": "reviewer",       "dispatched": true,  "duration_ms": 51000}
+  ]
   ```
 
   Check for task3.md: exists. Return to Step 1.
@@ -493,6 +616,30 @@ A three-task goal at `docs/implementation/PENDING/add-notifications/` containing
     - `reviewer` — skipped: `small_task_0_1_key_files`
   - `before_task` and `after_task` did not fire — both dispatches were skipped by the matrix.
   - Review: skipped by the decision matrix (`small_task_0_1_key_files`). Not approved — never reviewed.
+  ```
+
+  and the telemetry, which on this row is mostly skips — and is the whole reason the record exists, since a summary that simply omitted them would be indistinguishable from an agent that cut corners:
+
+  | Step | Dispatched | Duration | Reason |
+  |---|---|---|---|
+  | `enricher` | no | — | All four trigger sections were already populated |
+  | `before_task` | no | — | Not fired — the explorer dispatch it hooks was skipped by the matrix |
+  | `explorer` | no | — | `small_task_0_1_key_files` — decision matrix: small complexity, 1 key file |
+  | `planner` | no | — | `small_task_0_1_key_files` — decision matrix: small complexity, 1 key file |
+  | `implementation` | yes | 4m | |
+  | `after_task` | no | — | Not fired — the reviewer dispatch it hooks was skipped by the matrix |
+  | `reviewer` | no | — | `small_task_0_1_key_files` — decision matrix: small complexity, 1 key file |
+
+  ```json
+  [
+    {"name": "enricher",       "dispatched": false, "reason": "All four trigger sections were already populated"},
+    {"name": "before_task",    "dispatched": false, "reason": "Not fired — the explorer dispatch it hooks was skipped by the matrix"},
+    {"name": "explorer",       "dispatched": false, "reason": "small_task_0_1_key_files — decision matrix: small complexity, 1 key file"},
+    {"name": "planner",        "dispatched": false, "reason": "small_task_0_1_key_files — decision matrix: small complexity, 1 key file"},
+    {"name": "implementation", "dispatched": true,  "duration_ms": 240000},
+    {"name": "after_task",     "dispatched": false, "reason": "Not fired — the reviewer dispatch it hooks was skipped by the matrix"},
+    {"name": "reviewer",       "dispatched": false, "reason": "small_task_0_1_key_files — decision matrix: small complexity, 1 key file"}
+  ]
   ```
 
   Check for task4.md: does NOT exist. This was the final task.

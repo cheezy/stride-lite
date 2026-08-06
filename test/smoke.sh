@@ -1209,6 +1209,169 @@ else
 fi
 
 # ------------------------------------------------------------------
+# workflow telemetry vocabulary
+# ------------------------------------------------------------------
+#
+# The telemetry names every step the loop performs, so the vocabulary and the
+# loop must not drift: adding a step without a telemetry name would let it be
+# skipped invisibly, which is the one thing the record exists to prevent.
+#
+# Every grep here is SLICE-ANCHORED. Names like "explorer" and "reviewer" are
+# ordinary words that appear throughout this file, so a whole-file grep would
+# pass whether or not the vocabulary table contains them.
+
+echo ""
+echo "workflow telemetry vocabulary"
+
+TELEM_SKILL="$REPO_ROOT/skills/stride-lite-workflow/SKILL.md"
+
+# The vocabulary table: rows between its heading and the next heading.
+TELEM_TABLE="$(awk '/^##### Step name vocabulary$/ { f=1; next } f && /^#####? / { exit } f' "$TELEM_SKILL")"
+TELEM_NAMES="$(printf '%s\n' "$TELEM_TABLE" | awk -F'|' '/^\| `/ { gsub(/[` ]/,"",$2); print $2 }')"
+TELEM_STEPS="$(printf '%s\n' "$TELEM_TABLE" | awk -F'|' '/^\| `/ { gsub(/^ +| +$/,"",$4); print $4 }')"
+
+if [ -n "$TELEM_NAMES" ] && [ -n "$TELEM_STEPS" ]; then
+  ok "the telemetry vocabulary table extracted non-empty"
+else
+  nope "the telemetry vocabulary table extracted non-empty" "names and steps" \
+    "names=[$TELEM_NAMES] steps=[$TELEM_STEPS]"
+fi
+
+assert_eq "the telemetry vocabulary names seven steps" \
+  "$(printf '%s\n' "$TELEM_NAMES" | grep -c .)" "7"
+
+# stride's names must NOT appear — they describe hooks stride-lite cannot run.
+TELEM_FOREIGN=""
+for _n in after_doing before_review; do
+  case "$TELEM_NAMES" in
+    *"$_n"*) TELEM_FOREIGN="$TELEM_FOREIGN [$_n]" ;;
+  esac
+done
+assert_eq "the vocabulary borrows no stride-only step names" "$TELEM_FOREIGN" ""
+
+# --- Vocabulary/loop sync: every step the table cites must be a real heading ---
+# This is the assertion that fails if a step is added to the loop without a
+# telemetry name, or a name is documented for a step that does not exist.
+TELEM_BAD_STEP=""
+while IFS= read -r _step; do
+  [ -n "$_step" ] || continue
+  grep -q "^### ${_step} —" "$TELEM_SKILL" || TELEM_BAD_STEP="$TELEM_BAD_STEP [$_step]"
+done <<EOF_STEPS
+$TELEM_STEPS
+EOF_STEPS
+assert_eq "every telemetry entry cites a real loop step" "$TELEM_BAD_STEP" ""
+
+# The converse: every dispatch-or-hook step in the loop must have a telemetry
+# name. Steps 0, 1, 7 and 8 are orchestration the agent does itself, so they are
+# deliberately unrecorded — they are the only exemptions.
+TELEM_UNRECORDED=""
+while IFS= read -r _heading; do
+  [ -n "$_heading" ] || continue
+  case "$_heading" in
+    'Step 0'|'Step 1'|'Step 7'|'Step 8') continue ;;
+  esac
+  # Line-anchored, not substring: "Step 3a" contains "Step 3", so a substring
+  # test lets a longer citation silently satisfy a shorter step's requirement.
+  printf '%s\n' "$TELEM_STEPS" | grep -qx "$_heading" \
+    || TELEM_UNRECORDED="$TELEM_UNRECORDED [$_heading]"
+done <<EOF_HEADINGS
+$(grep -oE '^### Step [0-9]+[a-z]?' "$TELEM_SKILL" | sed 's/^### //')
+EOF_HEADINGS
+assert_eq "every dispatch-or-hook loop step has a telemetry name" "$TELEM_UNRECORDED" ""
+
+# --- The walkthrough shows real telemetry for every iteration ---
+WALKTHROUGH="$(awk '/^## Concrete walkthrough$/ { f=1; next } f && /^## / { exit } f' "$TELEM_SKILL")"
+WALK_BLOCKS="$(printf '%s\n' "$WALKTHROUGH" | grep -c '"name": "enricher"')"
+assert_eq "the walkthrough shows a telemetry block for each of its three iterations" \
+  "$WALK_BLOCKS" "3"
+
+# The contract says the table and the JSON are BOTH mandatory. The walkthrough is
+# the imitation target, so an example showing JSON alone teaches the shape the
+# contract forbids — assert every block is preceded by its table.
+# PAIR them, do not count them: three tables anywhere in the slice satisfies a
+# count even if all three sit above iteration 1 and the others show bare JSON.
+# Walk the slice and require a header row between each block and the previous.
+WALK_UNPAIRED="$(printf '%s\n' "$WALKTHROUGH" | awk '
+  /^ *\| Step \| Dispatched \| Duration \| Reason \|/ { seen_table=1; next }
+  /"name": "enricher"/ { if (!seen_table) unpaired++; seen_table=0 }
+  END { print unpaired+0 }')"
+assert_eq "each walkthrough telemetry block is preceded by its own table" "$WALK_UNPAIRED" "0"
+
+# Every block must list all seven names — a block missing one is the omission
+# the whole record exists to prevent.
+WALK_INCOMPLETE=""
+while IFS= read -r _n; do
+  [ -n "$_n" ] || continue
+  _count="$(printf '%s\n' "$WALKTHROUGH" | grep -c "\"name\": \"$_n\"")"
+  [ "$_count" -eq 3 ] || WALK_INCOMPLETE="$WALK_INCOMPLETE [$_n=$_count]"
+done <<EOF_NAMES
+$TELEM_NAMES
+EOF_NAMES
+assert_eq "every telemetry name appears in all three walkthrough blocks" "$WALK_INCOMPLETE" ""
+
+# --- Structural sanity of every telemetry entry in the file ---
+# The suite has no JSON parser and deliberately stays pure bash, so check the
+# invariants that actually matter: a skipped entry carries a reason, and a
+# reason never merely restates the skip.
+TELEM_ENTRIES="$(grep -o '{"name": "[a-z_]*",[^}]*}' "$TELEM_SKILL")"
+assert_eq "every telemetry entry names a step and a dispatched flag" \
+  "$(printf '%s\n' "$TELEM_ENTRIES" | grep -cv '"dispatched": \(true\|false\)')" "0"
+
+TELEM_SKIP_NO_REASON="$(printf '%s\n' "$TELEM_ENTRIES" | grep '"dispatched": false' | grep -cv '"reason":')"
+assert_eq "every skipped telemetry entry carries a reason" "$TELEM_SKIP_NO_REASON" "0"
+
+# A reason that just says "skipped" restates the flag beside it and audits nothing.
+# Match on SHAPE, not character distance. An offset window is green on margin
+# rather than on meaning: it rejects a legitimate short reason and accepts a
+# restatement padded past the cutoff. "<step> was skipped" is the shape that
+# says nothing; a reason that merely mentions a skipped dispatch is fine.
+# A restatement ENDS on "skipped" — that is its whole payload. Every real reason
+# ends on the condition instead ("...already populated", "...1 key file",
+# "...skipped by the matrix"). Anchoring on the tail catches both the skill's
+# named bad example and a restatement padded out to any length, without the
+# false positives an offset window produces on a legitimately short reason.
+TELEM_LAZY_REASON="$(printf '%s\n' "$TELEM_ENTRIES" | grep -o '"reason": "[^"]*"' \
+  | grep -ciE '(was |is |been )?skipped\.?"$' || true)"
+assert_eq "no telemetry reason merely restates the skip" "${TELEM_LAZY_REASON:-0}" "0"
+
+# --- Every telemetry JSON block is structurally sound ---------------------
+# The suite deliberately carries no JSON parser (pure bash + POSIX), so check
+# the invariants that actually matter per block rather than pretending to parse:
+# each block opens and closes its array, and each carries exactly seven entries.
+# Fences may be indented — the walkthrough's blocks sit inside list items, and a
+# line-anchored fence pattern would silently find only the unindented one.
+TELEM_BLOCK_COUNT=0
+TELEM_BAD_BLOCK=""
+_telem_blocks_file="$SANDBOX/telemetry-blocks.txt"
+# Only blocks whose entries are telemetry entries — an unrelated JSON example
+# added later must not fail with a message about telemetry.
+awk '/^[ \t]*```json$/ { inb=1; n=0; next }
+     inb && /^[ \t]*```$/ { if (n > 0) print n; inb=0; next }
+     inb && /\{"name": "/ { n++ }' "$TELEM_SKILL" > "$_telem_blocks_file"
+
+while IFS= read -r _n; do
+  [ -n "$_n" ] || continue
+  TELEM_BLOCK_COUNT=$(( TELEM_BLOCK_COUNT + 1 ))
+  [ "$_n" -eq 7 ] || TELEM_BAD_BLOCK="$TELEM_BAD_BLOCK [block $TELEM_BLOCK_COUNT has $_n entries]"
+done < "$_telem_blocks_file"
+
+assert_eq "the skill carries four telemetry JSON blocks (contract + three iterations)" \
+  "$TELEM_BLOCK_COUNT" "4"
+assert_eq "every telemetry JSON block carries exactly seven entries" "$TELEM_BAD_BLOCK" ""
+
+# Bracket balance per block — a truncated block is the failure a count alone misses.
+TELEM_UNBALANCED="$(awk '/^[ \t]*```json$/ { inb=1; o=0; c=0; t=0; next }
+     inb && /^[ \t]*```$/ { if (t > 0 && o != c) bad++; inb=0; next }
+     inb { if ($0 ~ /\{"name": "/) t++
+           n=gsub(/\{/,"{"); o+=n; n=gsub(/\}/,"}"); c+=n }
+     END { print bad+0 }' "$TELEM_SKILL")"
+assert_eq "every telemetry JSON block has balanced braces" "$TELEM_UNBALANCED" "0"
+
+# A dispatched entry must never carry a reason — reasons explain absence.
+TELEM_DISPATCHED_REASON="$(printf '%s\n' "$TELEM_ENTRIES" | grep '"dispatched": true' | grep -c '"reason":' || true)"
+assert_eq "no dispatched telemetry entry carries a skip reason" "${TELEM_DISPATCHED_REASON:-0}" "0"
+
+# ------------------------------------------------------------------
 # hook-diagnostician agent contract
 # ------------------------------------------------------------------
 #
