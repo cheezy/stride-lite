@@ -221,3 +221,31 @@ That is the entire output. The skill does not chain into any follow-up.
 - **`--output-dir` points at a non-existent base** — the helper returns the candidate path; the skill `mkdir -p`s `$(dirname "$TASK_PATH")` in Step 5. No special handling needed.
 - **`--output-dir` is an absolute path** — supported transparently by `resolve_output_path`.
 - **Decomposer output has no fenced `yaml` block** — surface a parser error and stop.
+
+
+## Red flags — STOP
+
+If you catch yourself thinking any of these, go back to the Step 3 validation gate:
+
+- "`kind: goal` came back — create-goal handles that shape, I'll just switch flows."
+- "I'll add one extra section here; the goal template doesn't need it."
+- "Nobody diffs the two templates anyway."
+- "I'll mirror create-goal and write `<output-dir>/<slug>/`."
+- "`--output-dir` is never passed — I'll hardcode `docs/implementation/PENDING`."
+- "That task file is stale, I'll overwrite it."
+- "I'll build the path myself; `resolve_output_path` only adds a check I don't need."
+- "The task is written — I'll POST it to Stride so it shows up on a board."
+
+**All of these mean: the shape is the contract.** One file, at `<output-dir>/tasks/<slug>.md`, rendered from a template that must stay byte-equivalent to `stride-lite-create-goal`'s. If a `kind` is wrong, surface the mismatch and stop — never switch flows.
+
+## Rationalization Table
+
+| Excuse | Reality | Consequence |
+|---|---|---|
+| "The decomposer returned `kind: goal`, and the create-goal skill knows that shape — I'll just run the goal flow." | `kind` MUST equal `task`. A `kind: goal` response in `mode=task` is the agent violating its own contract, and the create-goal skill's mirror-image check is **not a fallback for this one** — pattern-matching from its inverse is precisely the mistake this row names. | The user asked for one file and gets a directory of up to eight `taskN.md` files under a slug they never named, sitting beside real goal directories, where a user pointing `stride-lite-workflow` at that path would drive it as a goal. The decomposer bug that produced the wrong `kind` is never reported. |
+| "This task needs a section the goal-flow template doesn't have — I'll add it here only." | The two skills MUST render **identical task markdown**. The template is reproduced verbatim in both files precisely so that a divergence is a visible diff. | Single-task output and per-task goal output stop being indistinguishable in shape, so a human comparing `tasks/foo.md` against `some-goal/task2.md` sees two different section sets for what is supposed to be one artifact type — and `stride-lite:task-enricher`, which owns a fixed set of sections, meets a file whose sections it does not recognise. |
+| "`create-goal` writes to `<output-dir>/<slug>/`, so I'll mirror it and write `<output-dir>/<slug>.md`." | The single-task path is `<output-dir>/tasks/<slug>.md`. The `/tasks` segment is the whole reason one task can sit beside any number of goal directories without colliding. | The file lands as a sibling of every goal directory rather than a child of `tasks/`, so single-task output and goal output become indistinguishable by location, which is the only thing the `/tasks` segment buys. |
+| "`--output-dir` is almost never passed — I'll write straight to `docs/implementation/PENDING/tasks/` and skip threading `$OUTPUT_DIR`." | `parse_args` returns `$OUTPUT_DIR` with the default already applied. The flag MUST work, and this skill carries its own Pitfall against exactly this. | `--output-dir build/goals` is accepted, reports no error, and writes to `docs/implementation/PENDING/tasks/` anyway — a flag that is parsed, validated and then ignored, which is the failure mode a user is least likely to check for. |
+| "A task file with this slug already exists and is clearly the same task — I'll overwrite it." | `resolve_output_path` suffixes `-2`, `-3`, … on collision. This skill never overwrites. | If `stride-lite-workflow` already drove that file you destroy its `## Exploration Report`, `## Review Report` and `## Completion Summary`, and Step 1 then re-selects the task as incomplete and re-implements work already in the tree. |
+| "I'll build the path as `${OUTPUT_DIR}/tasks/${SLUG}.md` myself — the resolver only adds a collision check I don't need." | The collision check **is** the helper. Step 6's `[ -e ]` guard is defence in depth on a path the resolver already returned, not a substitute for it. | The first slug collision hits that guard and the run stops with a bare "file exists", instead of transparently producing `<slug>-2.md` and telling the user which path it used. |
+| "The task file is written — I'll POST it so it shows up on a board." | There is no board, no endpoint and no client. Terminal state is the written file; the skill does not push the user toward any follow-up. | The plugin's one contract — no network — becomes false, and a request needs a token, which means `AGENTS.md`'s `Never add Stride API calls` hard rule is broken by a plugin that has never held a credential and has no place to put one. |

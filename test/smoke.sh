@@ -659,12 +659,36 @@ fi
 # can return and every skip reason it can justify — prose and behaviour drifting
 # apart is the failure mode here.
 MATRIX_SKILL="$REPO_ROOT/skills/stride-lite-workflow/SKILL.md"
+# Slice to Step 3's own section. This was a WHOLE-FILE grep, which meant the
+# tokens were satisfied by any prose anywhere -- deleting the entire decision
+# matrix left the suite green. The Quick reference card added in W2017 says
+# "Key files" too, so the whole-file form could only get weaker from here.
+MATRIX_SLICE="$SANDBOX/matrix-slice.txt"
+awk '/^### Step 3 /{f=1;next} f && /^### Step /{exit} f' "$MATRIX_SKILL" > "$MATRIX_SLICE"
+if [ -s "$MATRIX_SLICE" ]; then
+  ok "the decision-matrix slice extracted non-empty"
+else
+  nope "the decision-matrix slice extracted non-empty" "content" "(empty)"
+fi
 MATRIX_MISSING=""
 for _row in 'skip-all' 'explore-review' 'full'; do
-  grep -q "\`$_row\`" "$MATRIX_SKILL" || MATRIX_MISSING="$MATRIX_MISSING $_row"
+  grep -q "\`$_row\`" "$MATRIX_SLICE" || MATRIX_MISSING="$MATRIX_MISSING $_row"
 done
-for _sig in 'Complexity' 'Key files' 'small_task_0_1_key_files' 'small_task_2_plus_key_files'; do
-  grep -q "$_sig" "$MATRIX_SKILL" || MATRIX_MISSING="$MATRIX_MISSING $_sig"
+for _sig in 'Complexity' 'Key files'; do
+  grep -q "$_sig" "$MATRIX_SLICE" || MATRIX_MISSING="$MATRIX_MISSING $_sig"
+done
+# The closed skip-reason vocabulary lives in its own section, not Step 3's, so
+# it needs its own slice -- one whole-file grep covering both was how the
+# original assertion survived deleting the matrix outright.
+SKIPVOCAB_SLICE="$SANDBOX/skip-vocab-slice.txt"
+awk '/^#### Recording a skipped step/{f=1;next} f && /^#### /{exit} f' "$MATRIX_SKILL" > "$SKIPVOCAB_SLICE"
+if [ -s "$SKIPVOCAB_SLICE" ]; then
+  ok "the skip-vocabulary slice extracted non-empty"
+else
+  nope "the skip-vocabulary slice extracted non-empty" "content" "(empty)"
+fi
+for _sig in 'small_task_0_1_key_files' 'small_task_2_plus_key_files'; do
+  grep -q "$_sig" "$SKIPVOCAB_SLICE" || MATRIX_MISSING="$MATRIX_MISSING $_sig"
 done
 assert_eq "the workflow SKILL.md documents every branch and skip reason" "$MATRIX_MISSING" ""
 
@@ -2251,6 +2275,290 @@ for _name in exploratory harden; do
   assert_eq "the telemetry vocabulary carries a \`$_name\` row" \
     "$(printf '%s\n' "$TELEM_NAMES" | grep -cx "$_name")" "1"
 done
+
+echo ""
+echo "anti-rationalization scaffolding"
+
+# ---------------------------------------------------------------------------
+# Every assertion here is SLICE-ANCHORED to one section of one skill file. The
+# forbidden-surface check in particular MUST see only table rows: the SKILL.md
+# prose and AGENTS.md legitimately discuss machinery stride-lite does NOT have
+# ("its after_doing and before_review do not exist here"), so a whole-file grep
+# would fire on the very sentences that get the distinction right.
+# ---------------------------------------------------------------------------
+RAT_WF="$REPO_ROOT/skills/stride-lite-workflow/SKILL.md"
+RAT_CG="$REPO_ROOT/skills/stride-lite-create-goal/SKILL.md"
+RAT_CT="$REPO_ROOT/skills/stride-lite-create-task/SKILL.md"
+RAT_IN="$REPO_ROOT/skills/stride-lite-init/SKILL.md"
+
+# Case-insensitive on the heading, matching this repo's own parsing idiom, so
+# the exact capitalisation never becomes load-bearing.
+_rat_slice() {  # $1 = file, $2 = lowercased heading prefix
+  awk -v want="$2" 'tolower($0) ~ ("^" want) { f=1; next } f && /^## / { exit } f' "$1"
+}
+RAT_EMPTY=""
+for _pair in "wf:$RAT_WF" "cg:$RAT_CG" "ct:$RAT_CT" "in:$RAT_IN"; do
+  _k="${_pair%%:*}"; _f="${_pair#*:}"
+  _rat_slice "$_f" '## rationalization table' > "$SANDBOX/rat-$_k.txt"
+  _rat_slice "$_f" '## red flags' > "$SANDBOX/red-$_k.txt"
+  [ -s "$SANDBOX/rat-$_k.txt" ] || RAT_EMPTY="$RAT_EMPTY [rat-$_k]"
+  [ -s "$SANDBOX/red-$_k.txt" ] || RAT_EMPTY="$RAT_EMPTY [red-$_k]"
+done
+# Guard the guards FIRST. A slice that came back empty makes every negative
+# below a free pass -- the exact vacuity this suite keeps having to fix.
+assert_eq "all eight scaffolding slices extracted non-empty" "$RAT_EMPTY" ""
+# And no slice may run past its own section into the next one.
+RAT_OVERRUN=0
+for _k in wf cg ct in; do
+  RAT_OVERRUN=$(( RAT_OVERRUN + $(grep -c '^## ' "$SANDBOX/rat-$_k.txt") \
+                              + $(grep -c '^## ' "$SANDBOX/red-$_k.txt") ))
+done
+assert_eq "no scaffolding slice swallows the next section" "$RAT_OVERRUN" "0"
+
+# --- The table is a real three-column table, not a stub -------------------
+_rat_rows() {  # $1 = slice file -> data rows only
+  awk '/^\| *Excuse *\| *Reality *\| *Consequence *\|/ { f=1; next }
+       f && /^\|[-: |]+\|$/ { next }
+       f && /^\|/           { print; next }
+       f                    { exit }' "$1"
+}
+for _k in wf cg ct in; do
+  _rat_rows "$SANDBOX/rat-$_k.txt" > "$SANDBOX/rows-$_k.txt"
+done
+cat "$SANDBOX/rows-wf.txt" "$SANDBOX/rows-cg.txt" \
+    "$SANDBOX/rows-ct.txt" "$SANDBOX/rows-in.txt" > "$SANDBOX/rows-all.txt"
+if [ -s "$SANDBOX/rows-all.txt" ]; then
+  ok "table rows extracted non-empty across all four skills"
+else
+  nope "table rows extracted non-empty across all four skills" "rows" "(none)"
+fi
+
+RAT_HDR=""
+for _pair in "wf:$RAT_WF" "cg:$RAT_CG" "ct:$RAT_CT" "in:$RAT_IN"; do
+  _k="${_pair%%:*}"; _f="${_pair#*:}"
+  [ "$(grep -c '^| Excuse | Reality | Consequence |$' "$_f")" = "1" ] \
+    || RAT_HDR="$RAT_HDR [$_k]"
+done
+assert_eq "each skill carries exactly one three-column table header" "$RAT_HDR" ""
+
+# Minimum row counts, so a table cannot be reduced to a token stub.
+RAT_COUNTS=""
+for _spec in "wf:10" "cg:6" "ct:6" "in:5"; do
+  _k="${_spec%%:*}"; _min="${_spec#*:}"
+  _n=$(grep -c . "$SANDBOX/rows-$_k.txt")
+  [ "$_n" -ge "$_min" ] || RAT_COUNTS="$RAT_COUNTS [$_k=$_n<$_min]"
+done
+assert_eq "every rationalization table meets its minimum row count" "$RAT_COUNTS" ""
+# ...and uniqueness, which is what makes the count non-gameable by duplication.
+RAT_DUPES=""
+for _k in wf cg ct in; do
+  _d=$(awk -F'|' '{gsub(/^ +| +$/,"",$2); print $2}' "$SANDBOX/rows-$_k.txt" | sort | uniq -d | grep -c .)
+  [ "$_d" = "0" ] || RAT_DUPES="$RAT_DUPES [$_k]"
+done
+assert_eq "no rationalization table pads its count with duplicate excuses" "$RAT_DUPES" ""
+
+# Structural shape: three non-empty cells per row.
+RAT_SHAPE=$(awk -F'|' 'NF != 5 { n++ } END { print n+0 }' "$SANDBOX/rows-all.txt")
+assert_eq "every row has exactly three columns" "$RAT_SHAPE" "0"
+RAT_BLANK=$(awk -F'|' '{ for (i=2;i<=4;i++) { c=$i; gsub(/^ +| +$/,"",c); if (c=="") { n++; break } } } END { print n+0 }' "$SANDBOX/rows-all.txt")
+assert_eq "no row ships an empty cell" "$RAT_BLANK" "0"
+
+# --- Every Consequence is CONCRETE (AC3) ----------------------------------
+awk -F'|' '{ c=$4; gsub(/^ +| +$/,"",c); print c }' "$SANDBOX/rows-all.txt" > "$SANDBOX/conseq.txt"
+if [ -s "$SANDBOX/conseq.txt" ]; then
+  ok "consequence cells extracted non-empty"
+else
+  nope "consequence cells extracted non-empty" "cells" "(none)"
+fi
+# A length floor alone is gameable by padding, and a banned-word list alone is
+# necessary but not sufficient -- "The run stops." contains no banned word and
+# is entirely vague. Three checks together give a real floor.
+RAT_SHORT=$(awk 'length($0) < 40 { n++ } END { print n+0 }' "$SANDBOX/conseq.txt")
+assert_eq "no consequence is a one-liner" "$RAT_SHORT" "0"
+# Hedging modals are the strongest machine-detectable vagueness signal, and
+# unlike banning "worse" or "quality" they do not collide with this repo's own
+# existing prose. The guard is deliberately over-strict: it also fires on a
+# relative clause ("the user who could fix it"), and the right response to that
+# is to reword the cell rather than to carve an exemption -- an exemption is a
+# hole, and "can" costs one character.
+assert_eq "no consequence hedges" \
+  "$(grep -ciE '\b(may|might|could|possibly|potentially)\b|can lead to|risk of|quality suffers|technical debt|harder to maintain' "$SANDBOX/conseq.txt")" "0"
+# The load-bearing one: a consequence that names no surface in this system is
+# not a consequence. Every cell must cite a backticked span or a Step number.
+assert_eq "every consequence names a concrete surface" \
+  "$(grep -cvE '`[^`]+`|Step [0-9]' "$SANDBOX/conseq.txt")" "0"
+
+# --- No row cites a surface stride-lite does not have (AC4) ---------------
+# Scoped to extracted ROWS. The underscore form `review_queue` appears nowhere
+# here, but the hyphenated "review-queue-scored" legitimately does in the create
+# skills -- so ban the underscore form only, never a loose review.queue match.
+RAT_FORBIDDEN=""
+for _bad in 'POST /api' '/api/tasks' 'root key' 'review_queue' 'needs_review' \
+            'created_by_agent' 'empty pill' 'before_doing' 'after_doing' 'before_review'; do
+  grep -qF -- "$_bad" "$SANDBOX/rows-all.txt" && RAT_FORBIDDEN="$RAT_FORBIDDEN [$_bad]"
+done
+grep -qE '[0-9]+%' "$SANDBOX/rows-all.txt" && RAT_FORBIDDEN="$RAT_FORBIDDEN [pct]"
+assert_eq "no table row cites a surface stride-lite lacks" "$RAT_FORBIDDEN" ""
+
+# --- The two security-bearing rows (AC6) ----------------------------------
+# Assert EXACTLY ONE row owns each rule, and that the supporting literals sit in
+# that SAME row -- otherwise a needle can be satisfied by a different row and
+# the rule can drift apart across two half-rows.
+RAT_SEC_A=$(grep -F 'authorized-and-non-production affirmative' "$SANDBOX/rows-wf.txt")
+assert_eq "exactly one workflow row owns the affirmative rule" \
+  "$(printf '%s\n' "$RAT_SEC_A" | grep -c .)" "1"
+RAT_SEC_A_MISS=""
+for _n in "never supply it on the user's behalf" "exactly one source" "localhost"; do
+  case "$RAT_SEC_A" in *"$_n"*) ;; *) RAT_SEC_A_MISS="$RAT_SEC_A_MISS [$_n]" ;; esac
+done
+assert_eq "the affirmative row states its rule, its source and its lure" "$RAT_SEC_A_MISS" ""
+
+# A row that claims a guard catches a failure it structurally cannot is worse
+# than a vague row -- it teaches the reader to rely on something that is not
+# there. Step 0's `test -f` stats the path it just wrote, so it proves the write
+# landed somewhere, never that it landed where the hook reads.
+assert_has "the marker-root row does not claim a guard it does not have" "$SANDBOX/rows-wf.txt" \
+    "Nothing catches this"
+assert_eq "no workflow row credits test -f with catching a wrong-root marker" \
+  "$(grep -c 'test -f. exists to turn exactly this' "$SANDBOX/rows-wf.txt")" "0"
+# The marker row's consequence must name a downstream outcome, not restate that
+# the marker is forgeable -- which its own Reality column already says.
+assert_has "the marker row names an outcome rather than restating its reality" "$SANDBOX/rows-wf.txt" \
+    "with no workflow running and nothing recorded"
+
+# Security consideration 2: a future edit could weaken a control by softening a
+# row, which looks like a copy-edit. AGENTS.md must say the safety rows are not
+# editorial, or the only thing protecting them is this file.
+assert_has "AGENTS.md marks the safety rows as controls, not prose" "$XT_AGENTS" \
+    "are not editorial"
+assert_has "AGENTS.md names both safety rows" "$XT_AGENTS" \
+    "never supplied on the user's behalf"
+assert_has "AGENTS.md ties a reworded hard rule to its table row" "$XT_AGENTS" \
+    "must be revisited in the same commit"
+
+RAT_SEC_B=$(grep -F 'never dispositioned as mitigated' "$SANDBOX/rows-wf.txt")
+assert_eq "exactly one workflow row owns the fail-closed rule" \
+  "$(printf '%s\n' "$RAT_SEC_B" | grep -c .)" "1"
+RAT_SEC_B_MISS=""
+for _n in "unmitigated" "Fail-closed"; do
+  case "$RAT_SEC_B" in *"$_n"*) ;; *) RAT_SEC_B_MISS="$RAT_SEC_B_MISS [$_n]" ;; esac
+done
+assert_eq "the fail-closed row names the disposition it forces" "$RAT_SEC_B_MISS" ""
+
+# --- AGENTS.md's hard rules are the source, and must not drift silently ---
+# Set equality on the rule set, not a count: a COUNT catches an addition but not
+# a rewording, and a reworded rule is exactly the case where somebody must
+# decide whether a table row needs to change with it.
+RAT_AGENTS_RULES=$(awk '/^## Hard rules for agents working on this codebase$/{f=1;next} f&&/^## /{exit} f' "$REPO_ROOT/AGENTS.md" \
+  | sed -n 's/^- \*\*\([^*]*\)\*\*.*/\1/p' | sed "s/[\`.']/ /g" | sed 's/  */ /g; s/ $//' | sort)
+if [ -n "$RAT_AGENTS_RULES" ]; then
+  ok "the AGENTS.md hard-rule set extracted non-empty"
+else
+  nope "the AGENTS.md hard-rule set extracted non-empty" "rules" "(none)"
+fi
+# SET EQUALITY, not a count. A count catches an added rule but not a REWORDED
+# one -- and a rewording is exactly the case where somebody has to decide
+# whether the table row that maps to it still says the right thing.
+RAT_RULES_EXPECTED='Dispatching another plugin s agent is not a network call, and it is not an exception to the no-network rule
+Never add Stride API calls
+Never change the default paths
+Never diverge the task markdown template
+Never give a file-mutating agent Bash
+Never list more than 8 child tasks in a goal
+Never make either exploratory step able to fail a task
+Never raise the plugin version
+Never write to stride/ from stride-lite, and never treat the activation marker as authorization
+Step 6c may loop, but it still never adds a cap
+The safety rows in a ## Rationalization Table are not editorial'
+assert_eq "the hard-rule set is exactly the one this stage maps" \
+  "$RAT_AGENTS_RULES" "$RAT_RULES_EXPECTED"
+# Each mapped rule must have a needle present somewhere in the four tables.
+# Two rules are EXEMPT and say why: they govern authoring the plugin, so no
+# agent running one of these four skills can reach them, and a row about agent
+# frontmatter grants would be exactly the generic noise this task exists to avoid.
+RAT_RULE_MISS=""
+for _spec in 'no network' '/PENDING/' 'identical task markdown' 'not an authorization' \
+             'opens no socket' 'clean skip' 'max_review_iterations' '1 to 8'; do
+  grep -qF -- "$_spec" "$SANDBOX/rows-all.txt" || RAT_RULE_MISS="$RAT_RULE_MISS [$_spec]"
+done
+# EXEMPT: "Never give a file-mutating agent Bash", "Never raise the plugin
+# version" and "The safety rows ... are not editorial" -- codebase-authoring
+# rules no skill USER can violate. The last one governs editing the tables
+# themselves, so a row about it inside a table would be circular.
+assert_eq "every non-exempt hard rule appears as a table row" "$RAT_RULE_MISS" ""
+
+# --- Red flags shape, in stride's canonical form --------------------------
+RAT_RED=""
+for _k in wf cg ct in; do
+  _n=$(grep -c '^- ' "$SANDBOX/red-$_k.txt")
+  [ "$_n" -ge 5 ] || RAT_RED="$RAT_RED [$_k-bullets=$_n]"
+  # Every bullet quotes a first-person rationalization.
+  _bad=$(grep '^- ' "$SANDBOX/red-$_k.txt" | grep -cv '"')
+  [ "$_bad" = "0" ] || RAT_RED="$RAT_RED [$_k-unquoted=$_bad]"
+  # Closes with the canonical line, and that line is NOT itself a bullet.
+  [ "$(grep -c '^\*\*All of these mean' "$SANDBOX/red-$_k.txt")" = "1" ] \
+    || RAT_RED="$RAT_RED [$_k-no-closer]"
+  [ "$(grep -c '^- \*\*All of these mean' "$SANDBOX/red-$_k.txt")" = "0" ] \
+    || RAT_RED="$RAT_RED [$_k-closer-is-bullet]"
+done
+assert_eq "every Red flags section has the canonical shape" "$RAT_RED" ""
+
+# --- The Quick reference card (workflow only) -----------------------------
+RAT_CARD="$SANDBOX/card.txt"
+_rat_slice "$RAT_WF" '## quick reference card' > "$RAT_CARD"
+if [ -s "$RAT_CARD" ]; then
+  ok "the Quick reference card slice extracted non-empty"
+else
+  nope "the Quick reference card slice extracted non-empty" "content" "(empty)"
+fi
+# It belongs to the workflow skill alone: the other three already open with a
+# four-line pipeline diagram, and a card there would be that block reprinted --
+# which is the duplication this task's own pitfall forbids.
+RAT_CARD_ELSEWHERE=""
+for _pair in "cg:$RAT_CG" "ct:$RAT_CT" "in:$RAT_IN"; do
+  grep -qi '^## quick reference card' "${_pair#*:}" && RAT_CARD_ELSEWHERE="$RAT_CARD_ELSEWHERE [${_pair%%:*}]"
+done
+assert_eq "the card lives in the workflow skill only" "$RAT_CARD_ELSEWHERE" ""
+RAT_CARD_BODY="$SANDBOX/card-body.txt"
+awk '/^```$/{f=!f;next} f' "$RAT_CARD" > "$RAT_CARD_BODY"
+RAT_CARD_LINES=$(grep -c . "$RAT_CARD_BODY")
+if [ "$RAT_CARD_LINES" -ge 20 ] && [ "$RAT_CARD_LINES" -le 55 ]; then
+  ok "the card is an index, not a second copy of the loop"
+else
+  nope "the card is an index, not a second copy of the loop" "20-55 non-blank lines" "$RAT_CARD_LINES"
+fi
+# It indexes the loop by GATING, a dimension the loop's own structure cannot
+# express -- so all three panes must be present, and no step heading may be
+# copied in.
+RAT_CARD_MISS=""
+for _pane in "WHICH STEPS RUN" "WHAT STOPS THE DRIVE" "WHAT IS A CLEAN SKIP"; do
+  grep -qF -- "$_pane" "$RAT_CARD_BODY" || RAT_CARD_MISS="$RAT_CARD_MISS [$_pane]"
+done
+assert_eq "the card carries all three panes" "$RAT_CARD_MISS" ""
+assert_eq "the card copies no step heading from the loop" \
+  "$(grep -c '^### Step' "$RAT_CARD_BODY")" "0"
+# Checked against a vocabulary that is ITSELF pinned at ten elsewhere in this
+# suite, so an eleventh step fails the card rather than quietly leaving the
+# index incomplete.
+RAT_CARD_STEPS=""
+while IFS= read -r _name; do
+  [ -n "$_name" ] || continue
+  grep -qF -- "$_name" "$RAT_CARD_BODY" || RAT_CARD_STEPS="$RAT_CARD_STEPS [$_name]"
+done <<EOF_CARDNAMES
+$TELEM_NAMES
+EOF_CARDNAMES
+assert_eq "the card indexes every telemetry step name" "$RAT_CARD_STEPS" ""
+
+# --- Placement guard: nothing new may enter the two parsed fences ---------
+# create-goal's taskN.md template fence is counted at exactly 14 sections and
+# cascades into the enricher partition; init's canonical template is byte-diffed.
+RAT_TAIL=""
+for _pair in "cg:$RAT_CG" "ct:$RAT_CT" "in:$RAT_IN"; do
+  _k="${_pair%%:*}"
+  _t=$(grep '^## ' "${_pair#*:}" | tail -2 | tr '\n' '|')
+  [ "$_t" = "## Red flags — STOP|## Rationalization Table|" ] || RAT_TAIL="$RAT_TAIL [$_k:$_t]"
+done
+assert_eq "the new sections are appended at EOF, clear of both parsed fences" "$RAT_TAIL" ""
 
 echo ""
 echo "hook-diagnostician agent contract"

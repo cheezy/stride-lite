@@ -138,3 +138,31 @@ your-email@example.com
 - **User lacks write permission in cwd** — the file-write step fails with the shell's standard "permission denied" error; surface that and exit non-zero. Do not retry, do not prompt.
 - **`--force` supplied but no existing file** — proceed as if `--force` were absent. No error, no warning. `--force` only matters when there is something to overwrite.
 - **Unknown argument** — hard error. Do not silently absorb into a positional argv slot; the command takes no positionals.
+
+
+## Red flags — STOP
+
+If you catch yourself thinking any of these, stop: this skill writes one file and exits.
+
+- "I'll run the `## before_task` block once, just to check it works."
+- "The harness fires it anyway — running it now is the same thing, only earlier."
+- "There's an existing `.stride_lite.md`, but it's probably still the default — `--force` it."
+- "They ran this from `apps/web/` — they obviously meant the repo root."
+- "They don't use `after_goal`, so I'll leave that section out."
+- "I'll reorder the sections to put `email` last; nothing parses by position."
+- "The create commands should really require `init` first — I'll say so."
+- "I'll check that the email address resolves before I write the file."
+
+**All of these mean: write the template, print the message, exit.** Hook execution belongs to the Claude Code harness via `hooks/hooks.json`; running a section here either doubles its side effects or removes the `exit 2` that was the whole point of it.
+
+## Rationalization Table
+
+| Excuse | Reality | Consequence |
+|---|---|---|
+| "I just scaffolded `.stride_lite.md` — I'll run the `## before_task` block once to prove it works." | This skill is a **pure scaffolder**: write the file, print the message, exit. The Claude Code harness fires the sections from `hooks/hooks.json` at the real lifecycle intercept points. | The section runs **twice** — once by your hand and once when the harness fires it on the real dispatch — so an `## after_goal` that tags a release, deploys, or posts a notification does all of it twice, and neither run knows about the other. |
+| "The harness fires `## after_task` anyway — running it here is the same thing, just earlier." | `before_task` and `after_task` are **blocking PreToolUse** hooks. Their entire value is the `exit 2` that stops the dispatch. | Run by hand, a non-zero exit is a message on your screen and nothing more: the `stride-lite:task-reviewer` dispatch it was supposed to block proceeds, so the gate never fires at all. The failure mode is not "ran twice" but "never ran". |
+| "`.stride_lite.md` already exists but it's probably still the default template — I'll pass `--force` and rewrite it." | With `--force` the target is removed before the write. Without it the skill refuses and exits non-zero pointing at the flag. | The user's filled-in `## before_task`, `## after_task` and `## after_goal` — their test command, their deploy step, their contact address — are deleted with no prompt, no backup and no diff, and the skill prints its ordinary success message on top. |
+| "The user ran this from a subdirectory — they clearly meant the repo root, so I'll resolve up to it." | The target is exactly `./.stride_lite.md` relative to the cwd at invocation: no `../`, no `$HOME`, no canonicalization, no symlink following. | In a monorepo or a nested checkout the root you resolve to is a directory the user never named, and a `.stride_lite.md` already sitting there — with somebody else's `## after_task` in it — is the file you are about to collision-check and, under `--force`, delete. |
+| "The user has no goal-completion command — I'll leave `## after_goal` out of the scaffold." | The template contract is exact and ordered: `## email`, `## before_task`, `## after_task`, `## after_goal`. An empty fenced `bash` block is the intended no-op shape for an unused hook. | `test/smoke.sh` byte-diffs this template against its own copy, so the suite goes red immediately — and the user never discovers `after_goal` exists, because the scaffold is the only place it is ever named to them. |
+| "`/stride-lite:create-goal` will want hooks eventually — I'll tell the user to run `/stride-lite:init` first." | Init is deliberately **not** a prerequisite for either create command, and `stride-lite-workflow` treats a missing `.stride_lite.md` as a valid reduced-functionality configuration. | You attach a required setup step to `/stride-lite:create-goal` and `/stride-lite:create-task`, which both work without one, and a user who declines it reads your message as "the create commands are broken" and stops using them. |
+| "The `## email` field is filled in — I'll validate the address or send a test message so they know it works." | stride-lite makes no network request of any kind. The `## email` value is scaffold text; the hook executor dispatches only on the three hook section names and never reads it. | A scaffolder that makes a request is a scaffolder that hangs on a slow DNS lookup, fails on an offline machine, or transmits the user's address off it — and `AGENTS.md`'s no-network contract, which is why this plugin ships with no credential store, stops being true. |

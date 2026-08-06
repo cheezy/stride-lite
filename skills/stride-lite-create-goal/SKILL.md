@@ -286,3 +286,33 @@ Render-time rules:
 - **`--output-dir` is an absolute path** — supported transparently by `resolve_output_path`.
 - **Decomposer output has no fenced `yaml` block** — surface a parser error citing "no fenced yaml block found" and stop. Do not attempt to write files from a malformed agent response.
 - **Decomposer output is `kind: task` when `mode=goal` was requested** — surface a `kind` mismatch error and stop. This is the agent's own contract violation.
+
+
+## Red flags — STOP
+
+If you catch yourself thinking any of these, go back to the validation gate in Step 3:
+
+- "It renders `- (none)` either way, so a missing key is the same as an empty list."
+- "I'll add the four operational keys myself so the gate passes."
+- "Nine tasks — I'll merge the last two and carry on."
+- "Zero tasks, but the goal is good — I'll write just the `goal.md`."
+- "The slug directory already exists and it's mine — I'll write into it."
+- "The prompt is thin; I'll ask the user one clarifying question first."
+- "`docs/implementation/PENDING` is a mouthful — I'll pick a shorter default."
+- "I'll inline the slugify; it's three characters of `tr`."
+- "The goal is written and correct — I'll POST it to Stride so the user doesn't have to."
+
+**All of these mean: the validation gate is the contract, not a suggestion.** Surface the specific failing task index and field, write nothing, and stop.
+
+## Rationalization Table
+
+| Excuse | Reality | Consequence |
+|---|---|---|
+| "The decomposer left `logging_requirements` out entirely, but the template renders `- (none)` either way — I'll just render it empty." | Step 3's gate accepts an **empty list** and rejects a **missing key**. Rendering identical output from two different inputs is exactly what the gate exists to prevent. | A `taskN.md` whose author never considered logging becomes byte-identical to one who considered it and found nothing, and neither `stride-lite-workflow`'s Step 1a nor `stride-lite:task-enricher` can tell them apart afterwards, because by then the only surviving evidence is `- (none)`. |
+| "The gate wants all four operational keys present — I'll add them as empty lists so validation passes." | An empty list is the *decomposer's* answer, not yours. The gate validates the agent's output, not your patch of it. | You convert an agent contract violation into a silently well-formed goal directory, so the `create-decomposer` bug that dropped the key is never surfaced to the user who can fix the prompt, and it recurs on every goal after this one. Step 3 exists to report the agent's error, not to absorb it. |
+| "The decomposer returned 9 tasks and the ninth is tiny — I'll fold it into task 8 and write the goal." | `goal.tasks` MUST have **1 to 8** entries. Above 8 is a parser error and a stop; the cap is `create-decomposer`'s own hard rule and this skill rejects violations rather than repairing them. | `task8.md` ships with two unrelated `## Acceptance criteria` under one `Complexity:` line the decomposer sized for a single task, so `lib/select_workflow_branch.md` resolves a branch for half the work the file now contains — and the agent's cap violation is never reported to the person who can re-prompt it. |
+| "The decomposer returned zero tasks but the goal itself is well described — I'll write `goal.md` on its own." | The floor is as real as the cap: 0 entries is a parser error and a stop, and **no files are written**. | `stride-lite-workflow` hard-errors on the directory at Step 1 with "no taskN.md files", so the only artifact of the run is an unusable directory the user has to find and delete by hand. |
+| "A directory with this slug already exists from a run I aborted — I'll write into it instead of taking a `-2` suffix." | `resolve_output_path` is the only correct way to pick `$GOAL_DIR`, and it guarantees the path does not exist at the moment it returns. | You overwrite `taskN.md` files that already carry an `## Exploration Report`, a `## Review Report` and a `## Completion Summary` from a workflow drive — the only content in the tree that is not reproducible from the prompt. |
+| "The prompt is too thin to decompose well — I'll ask the user two quick questions first." | The prompt plus `--requirements-dir` are the entire input. Thin input is the decomposer's problem, and it documents its conservative choices in `decomposition_notes`. | The run blocks on a prompt the user has already walked away from, and the `## Decomposition notes` section — the reviewable record of exactly what was guessed and why — never gets written at all. |
+| "`docs/implementation/PENDING` is verbose — I'll write to `docs/goals/` and say so in the summary." | The default is a cross-skill contract shared with `/stride-lite:create-task`, the README, the slash commands, and the workflow's terminal archive move. | The workflow's archive step looks for `/PENDING/` as a path segment, does not find one, warns to stderr and skips the move — so the goal completes, is never archived, and nothing fails loudly enough for anyone to notice. |
+| "Slugifying a title is one `tr` — routing it through `lib/slugify.md` is ceremony." | Every step routes through its designated helper so behaviour is independently testable. `test/smoke.sh` exercises the helpers, not your inline version. | An all-punctuation title that `slugify` correctly rejects with a non-zero exit becomes an empty string in your version, and the goal is written directly into `docs/implementation/PENDING/` rather than a subdirectory of it, where the next run's `resolve_output_path` will not see it as a collision. |

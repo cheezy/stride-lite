@@ -1073,13 +1073,17 @@ If you catch yourself thinking any of these, go back to the documented step:
 - **"The reviewer's `changes_requested` looks minor — I'll write the Completion Summary anyway."** No. The Step 7 contract is binary: `approved` proceeds, anything else loops back. Bypassing the loop defeats the safeguard.
 - **"The after_task hook failed but it's just a flaky test — let me skip and complete the task."** No. Blocking failures must clear the marker and stop the workflow. Fix the root cause (in the user's `.stride_lite.md`) and re-run.
 - **"The goal directory was malformed so nothing really started — I can skip the marker clear."** No. `rm -f` on a path that does not exist is a no-op. Clear on every exit path, unconditionally.
-- **"`.stride_lite.md` doesn't exist, I'll skip the hooks but write Completion Summaries anyway."** Yes, this is actually correct — no `.stride_lite.md` is a valid reduced-functionality configuration. But surface a warning so the user knows the hooks were skipped.
 - **"The review-loop has hit 3 iterations but the reviewer keeps finding the same issue — I'll force-approve."** No. Clear the marker, stop, surface the unresolved issue, and let the user intervene. Forcing approval defeats the entire review-loop purpose.
 - **"The app is on `localhost`, so it's obviously a dev box — I'll dispatch a session without asking."** No. A `localhost` URL is a routing fact, not an authorization. The affirmative comes from the user at Step 0 or not at all, and inferring it *is* supplying it on their behalf. Skip Step 6a.
 - **"`/explore` is the plugin's headline command and does everything Step 6a needs — I'll just run that."** No, and this is the easiest mistake to make precisely because it is the command the plugin advertises. It opens with an unconditional question round this workflow cannot answer, and the workflow never prompts between steps. Dispatch `stride-exploratory-testing:explorer`, one charter per dispatch, or skip. The same goes for typing the bare plugin name, which resolves to the router skill.
 - **"The check `/harden` drafted looks right — I'll record the manual test as covered."** No. `/harden` holds no test runner; it ran nothing. "Drafted, not run" is the only honest phrasing, and calling a draft green is fabricated test output.
 - **"The session came back blocked because the dev server was down — that's an important finding."** No. An obstacle is not a finding. Record it as an obstacle, take the zero-probe coverage disposition, and hand the manual test back.
-- **"The session found a Critical but the review already approved — I'll note it and complete."** Only if it is *discovered*. An **introduced** Critical takes Step 7's session-escalation branch under the same cap.
+- **"The session found a Critical but the review already approved — I'll note it and complete."** No — not unless it is *discovered*. An **introduced** Critical takes Step 7's session-escalation branch under the same cap.
+- **"The security-reviewer skipped consideration 2 but the code looks fine — I'll mark it mitigated."** No. Fail-closed. An unreadable verdict set is recorded `unmitigated` with the anomaly as its evidence, and Step 7's security-escalation branch takes it from there.
+- **"Security keeps looping — I'll give Step 6c its own retry budget so it stops eating the review cap."** No. One cap, `max_review_iterations`, shared by all three escalation reasons. One increment per iteration, not one per reason.
+- **"I'll just add `.exploratory/` to their `.gitignore` so Step 6a can run."** No. It is a precondition, not a repair. Skip 6a and record why.
+
+**All of these mean: STOP and re-read the step the bullet names.** Every one of them has a documented branch, and taking the documented branch leaves a record. Overriding silently leaves none.
 
 ## Pitfalls
 
@@ -1103,3 +1107,71 @@ If you catch yourself thinking any of these, go back to the documented step:
 - **Don't conflate "task-explorer error" with "implementation error".** Step 3 has its own failure mode (the agent surfaces an error); Step 4's implementation is on you. Clear the marker, surface explorer errors and stop; on the rows where the matrix dispatched the explorer, don't proceed to Step 4 without its findings. A dispatch the matrix **skipped** is not an error — proceed to Step 4 with the skip recorded.
 - **Don't introduce a new slash command in this skill.** Invocation is via the Skill tool only — same pattern as `stride:stride-workflow`. If a command surface is wanted, it's a follow-up release.
 - **Don't read user-supplied hook commands as anything other than verbatim bash.** Do not pre-validate them, do not "sanitize" them. The user owns `.stride_lite.md` content; if they put a destructive command there, the workflow will execute it. That's a user responsibility, not a skill safety net.
+
+## Rationalization Table
+
+| Excuse | Reality | Consequence |
+|---|---|---|
+| "The run died before anything really started — I can skip the marker clear." | `rm -f` on a path that does not exist is a no-op, so the clear is unconditional on every exit path. | The stale marker keeps the user's hooks armed for up to four hours, so the next standalone `stride-lite:task-explorer` dispatch — a workflow the README documents as supported — silently runs their `## before_task` against a tree they were editing by hand. |
+| "The activation marker is present, so a workflow is running — I can treat that as permission." | Any local process can write `.stride-lite/.orchestrator_active`. It gates *whether a hook fires* and nothing else; it is **not an authorization**. | `.stride-lite/.orchestrator_active` is the *only* thing consulted, so a file an unrelated local process wrote — or one another checkout left behind — arms the user's hooks with no workflow running and nothing recorded. Staleness is a timing bug the four-hour freshness window bounds; forgery is bounded by nothing, which is why the marker gates *whether a hook fires* and never anything else. |
+| "`CLAUDE_PROJECT_DIR` isn't set — I'll write the marker relative to the cwd, it's the same directory anyway." | The hook scripts resolve the root with their own fallback. A marker written under a different root than the hook reads is the same as no marker at all, and the gate fails silently by design. | Every `.stride_lite.md` hook no-ops for the entire goal drive with nothing reported, so the user's `## after_task` never runs and each `## Completion Summary` still records the hooks as clean. **Nothing catches this** — Step 0's `test -f` stats the path it just wrote, so it proves the write landed *somewhere*, not that it landed where the hook reads. |
+| "`.exploratory/` isn't in their `.gitignore`, but adding the line takes one edit — then Step 6a can run." | The `.gitignore` read is a **precondition**, never a repair. A check that repairs its own subject is not a check, and this skill never edits the user's `.gitignore`. | You commit an edit to a file this task never touched, and a `## after_task` block that stages everything lands a session's transcribed application output — tokens and internal hostnames included, because nothing upstream redacts it — in the user's git history, where `.gitignore` is inert for a path once it is tracked. |
+| "The app is at `http://localhost:4000`, so it's obviously a dev box — I'll dispatch the exploratory session." | A `localhost` URL is a routing fact, not an authorization. The **authorized-and-non-production affirmative** has exactly one source: the user, at Step 0. Inferring it *is* supplying it, and you must never supply it on the user's behalf. | A dispatched session drives probes against an application nobody authorized, and if that port tunnels to a shared or hosted environment the damage is real and irreversible. The honest outcome is Step 6a's clean skip. |
+| "The security-reviewer returned no verdict for consideration 2, but the diff looks fine — I'll record it as mitigated." | Fail-closed: a consideration is never dispositioned as mitigated on the strength of a verdict set you could not read. A missing, evidence-free, out-of-enum or unmatched verdict is recorded `unmitigated`, with the anomaly itself as the evidence. | An unchecked security implication ships under a green `## Completion Summary`, and the single artifact that would have shown it was never checked is the one that now says mitigated. Downgrading is the only way to make Step 7's conjunction pass on a diff no specialist verdicted. |
+| "Security keeps looping and burning the review budget — I'll give Step 6c its own retry cap." | Step 6c reuses `max_review_iterations` and Step 7's existing terminal shape. There is no second cap, no security-specific retry budget, and no security-specific terminal state. | A drive takes `max_review_iterations` Step 4 passes on review findings and a second budget's worth on security ones, so the bound the user configured stops being the bound the drive honours — and the two counters can only be reconciled by a reader who knows both exist. |
+| "The exploratory session came back `blocked` — I'll fail the task so somebody looks at it." | Every 6a and 6b gate falls through to a **clean skip**. Their only effect on control flow is Step 7's session-escalation branch, bounded by the cap that was already there. | A task with no defect stops with no `## Completion Summary`, so the next run re-selects it at Step 1 and re-implements work already sitting in the tree — a denial of progress produced by a step that must never fail anything. |
+| "The check `/harden` drafted obviously passes — I'll move it into the test tree and record the manual test as covered." | `/harden` holds no test runner and ran nothing. A draft is written against the *unfixed* code, and enters the tree only after the user's own `## after_task` block runs clean across the whole suite. | A red check in the test tree blocks the **next** task's reviewer dispatch at its blocking `## after_task` hook, which surfaces as a Step 6 failure and takes the entire goal drive down on a failure the user did not cause. |
+| "Step 4 touched more files than `## Key files` listed — I'll re-resolve the matrix before Step 6." | The row is resolved once, from the file as it stood after Step 1a, and carried. Re-deriving it after the tree has changed can return a different row for the same task. | The task reaches Step 8 with an `## Exploration Report` and no `## Review Report`, Step 7 takes the no-review branch, and the diff ships unreviewed with no reviewer skip recorded anywhere. Explored but unreviewed is the exact shape the single-resolution rule exists to prevent. |
+| "I want to check my own work before the reviewer sees it — one test run outside `## Bash scope` is harmless." | The prohibition is on commands **this skill composes for itself**. The one exception is Step 6b re-running the user's own `## after_task` block verbatim, once, on the move branch. | You report a green run that the user's configured gate never performed, against a framework you inferred from the repo rather than read out of `.stride_lite.md` — and on the `skip-all` row their `## after_task`, the only blocking check, still never fired. |
+| "Step 6a already reaches a running app, so a `curl` to its health endpoint is inside the same licence." | Dispatching another plugin's agent is a local `Agent` tool call. stride-lite **opens no socket**, imports no HTTP client, and holds no credential; the dispatched agent reaches the app under *its* plugin's boundary. A dispatch is not a request. | The `curl` / `wget` / `nc` prohibition in `## Bash scope` becomes advisory, the plugin's one mechanically-checkable contract stops being true of it, and the next reader treats the carve-out as the rule rather than the exception it is documented as. |
+| "The session found a real Critical — I'll add a `task4.md` so it doesn't get lost." | This skill never creates task files. A discovered finding is recorded in this task's `## Completion Summary` and again in `goal.md`'s at the final-task branch. | Step 8's final-task detection looks for `task(K+1).md`; the file you added turns the last task into a non-final one, so `goal.md` never gets its Completion Summary, `## after_goal` never fires, and the archive move never happens. |
+
+## Quick reference card
+
+The eight-step loop is documented above; this is the index **into its gates**, which is the one thing the loop's own structure cannot express — gating cuts across steps rather than living inside one. Reconstructing this today means reading the decision matrix, three separate decision-summary tables, Step 7's escalation branches, the marker section and `## Bash scope`.
+
+```
+STRIDE-LITE WORKFLOW — GATE INDEX
+
+WHICH STEPS RUN FOR THIS TASK
+├─ enricher (1a) ──── any of Key files / Acceptance criteria /
+│                     Verification steps / Testing strategy is sparse
+├─ before_task (2) ── no gate of its own: fires only if the explorer dispatches
+├─ explorer (3) ──┐
+├─ planner (3a) ──┼── decision matrix, resolved ONCE, after 1a, never re-derived
+├─ reviewer (6) ──┘   small + 0-1 key files ....... none of the three
+│                     small + 2+ key files ........ explorer + reviewer
+│                     medium / large / unreadable . all three
+├─ implementation (4) ungated — the only step that writes code
+├─ after_task (5) ─── no gate of its own: fires only if the reviewer dispatches
+├─ exploratory (6a) ─ manual tests AND plugin AND agent dispatchable
+│                     + the authorized/non-prod affirmative from Step 0
+│                     + .exploratory/ already in their .gitignore
+│                     AT MOST ONCE per task, on a settled diff
+├─ harden (6b) ────── 6a ran AND convertible findings AND harden available
+└─ security (6c) ──── one or more real considerations AND plugin AND agent
+                      EVERY review iteration — deliberately unlike 6a
+
+WHAT STOPS THE DRIVE — the complete list
+├─ before_task / after_task exits non-zero (blocking; the harness returns 2)
+├─ explorer or reviewer dispatch errors
+├─ goal dir malformed: no goal.md, no task1.md, or a numeric gap
+├─ review_iteration reaches max_review_iterations (3)
+└─ a command you need is not on the Bash scope allow-list
+   ALL FIVE: clear the marker first, write no Completion Summary
+
+WHAT IS A CLEAN SKIP — recorded, never a stop
+├─ any matrix skip, and the hook that rode on the skipped dispatch
+├─ any 6a / 6b / 6c gate or precondition unmet — including 6c's dispatch
+│  failing outright, which is a skip and not a loop
+├─ an enricher dispatch failing: the file is unchanged; proceed
+└─ goal dir not under /PENDING/: warn, skip the archive move, still complete
+
+ONE CAP. The review status, an introduced Critical, and an unmitigated
+consideration all share max_review_iterations. ONE increment per iteration,
+not one per reason.
+
+MARKER. Written once at Step 0, cleared on EVERY exit path (rm -f is a no-op).
+Forgeable by any local process — a coordination signal, NEVER an authorization.
+```
+
