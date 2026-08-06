@@ -147,7 +147,9 @@ The `hooks/hooks.json` registered with Claude Code auto-fires the `## before_tas
 
 You do **NOT** read `.stride_lite.md` or execute its hook sections directly in this step — the harness does that. Missing `.stride_lite.md`, a missing `## before_task` section, or an empty fenced block all degrade to a clean no-op (exit 0) so the dispatch proceeds. A failing command emits a structured failure JSON on stdout for your Step 8 Completion Summary to reference.
 
-If Step 3's dispatch is blocked by a `before_task` failure, clear the marker, surface the failing command and its stderr to the user and stop the workflow.
+If Step 3's dispatch is blocked by a `before_task` failure, dispatch `stride-lite:hook-diagnostician` with the harness's structured failure JSON as the prompt input, then clear the marker, surface its prioritized fix plan to the user and stop the workflow.
+
+**Triage does not unblock.** The diagnostician diagnoses and returns a plan; it cannot fix, re-run or proceed. The failure is still blocking, the workflow still stops, and the user still decides. The dispatch happens *before* the stop so the user gets a triage rather than a raw dump — never *instead* of it.
 
 ### Step 3 — Dispatch `stride-lite:task-explorer` (decision matrix)
 
@@ -222,7 +224,7 @@ Follow the acceptance criteria as your definition of done. Replicate the pattern
 
 Same auto-fire pattern as Step 2, but the harness runs the `## after_task` section as a **PreToolUse** hook on the Step 6 `Agent` dispatch of `stride-lite:task-reviewer`. Same blocking semantics — a non-zero exit blocks the reviewer dispatch, which surfaces to you as a Step 6 failure.
 
-If the reviewer dispatch is blocked by an `after_task` failure, clear the marker, surface the failing command and its stderr to the user and stop the workflow.
+If the reviewer dispatch is blocked by an `after_task` failure, dispatch `stride-lite:hook-diagnostician` with the harness's structured failure JSON as the prompt input, then clear the marker, surface its prioritized fix plan to the user and stop the workflow. This is the mixed-output case the agent is most useful for — an `after_task` section is typically a test suite and a linter, and their failures rarely want fixing in the order they printed. Triage does not unblock: the failure is still blocking and the workflow still stops.
 
 You do **NOT** execute `.stride_lite.md` hook sections directly in this step. The harness handles it; a failing command emits structured failure JSON for your Step 8 Completion Summary.
 
@@ -292,7 +294,7 @@ stride's own five-value skip enum is deliberately **not** reused: two of its val
 - If `task(K+1).md` **exists** → return to Step 1 to process the next task in the loop.
 - If `task(K+1).md` **does NOT exist** → this was the final task in the goal. Continue with the goal-level wrap-up:
   1. Append a `## Completion Summary` section to `goal.md` (the goal-level summary). Content: one-paragraph synthesis of the work across all child tasks, bullet list of completed tasks with one-line each, total elapsed time if trackable.
-  2. The append to `goal.md` is performed via `Edit` or `Write`; the harness auto-fires the `## after_goal` section from `.stride_lite.md` as a **PostToolUse** hook when (a) the file path ends in `goal.md` and (b) the written content contains the literal string `## Completion Summary`. PostToolUse cannot roll back the write, so `after_goal` is **advisory** — a failure emits structured failure JSON on stdout for the user to inspect but does not stop or roll back. You do NOT execute `.stride_lite.md` hook sections directly in this step.
+  2. The append to `goal.md` is performed via `Edit` or `Write`; the harness auto-fires the `## after_goal` section from `.stride_lite.md` as a **PostToolUse** hook when (a) the file path ends in `goal.md` and (b) the written content contains the literal string `## Completion Summary`. PostToolUse cannot roll back the write, so `after_goal` is **advisory** — a failure emits structured failure JSON on stdout for the user to inspect but does not stop or roll back. You **may** dispatch `stride-lite:hook-diagnostician` on that JSON if the failure is not self-evident, but it is optional here in a way it is not on the blocking paths: nothing is waiting on the answer, and the goal's work is already complete. You do NOT execute `.stride_lite.md` hook sections directly in this step.
   3. **Move the goal directory from `PENDING/` to `IMPLEMENTED/`.** After the `after_goal` hook has fired, archive the completed goal by moving the goal directory from `docs/implementation/PENDING/<slug>/` to `docs/implementation/IMPLEMENTED/<slug>/`. Four behavioral details:
 
      - **Timing.** This move happens AFTER `after_goal` fires — the user's hook sees the still-PENDING path, matching what the hook was scoped to handle. Never move before the hook.
@@ -434,6 +436,7 @@ If the user wants build/test/lint runs as part of the workflow, they put them in
 - **Goal directory has task1.md and task3.md but no task2.md** — hard error per Step 1's gap-handling rule. Clear the marker, surface the gap and stop.
 - **Every task in the goal resolves to `skip-all`** — a legitimate outcome, not a failure: no explorer, no reviewer, and neither `before_task` nor `after_task` fires anywhere in the goal. `after_goal` still fires on the goal.md write, because that trigger is a file write rather than an agent dispatch. Record the matrix decision on every task as usual — the audit trail is the only evidence the goal was gated rather than skipped by accident.
 - **Every taskN.md already has `## Completion Summary`** — clear the marker, log "goal already complete" and stop. Do NOT re-run after_goal (the goal has already been wrapped up in a prior session).
+- **hook-diagnostician dispatch fails or returns an error** — surface the raw failure JSON instead and stop as usual. Triage is an improvement on the raw dump, never a precondition for reporting it; a failed diagnosis must not swallow the hook failure it was dispatched to explain.
 - **task-enricher dispatch fails or returns an error** — record it and proceed with the task file as it stands. Unlike the explorer, enrichment is a gap-filler rather than a prerequisite: the file was workable before the dispatch and is unchanged after a failed one. Note the failure in the Step 8 Completion Summary so a thin task file never looks like a deliberately thin one.
 - **task-explorer agent dispatch fails or returns an error** — clear the marker, surface the explorer's error and stop. The explorer's findings are a prerequisite for high-quality implementation.
 - **task-reviewer agent dispatch fails or returns an error** — clear the marker, surface the reviewer's error and stop. Without a review verdict, the workflow can't decide Step 7.

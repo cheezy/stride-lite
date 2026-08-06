@@ -166,6 +166,22 @@ After it runs, the input file gains a new `## Review Report` section at the bott
 
 **Re-runs replace in place** — same contract as task-explorer. Dispatching the agent a second time slices from the existing `## Review Report` heading through EOF and overwrites.
 
+### `stride-lite:hook-diagnostician`
+
+Turns a failed hook into a triage. When a `.stride_lite.md` hook returns non-zero, the harness emits a structured failure JSON — which hook, which command, its exit code, the last 50 lines of its stdout and stderr, what had already passed, and what never ran. This agent parses that payload, splits combined output at tool boundaries, classifies each issue by severity, and returns a fix plan ordered by what blocks what rather than by what printed first.
+
+Invoke it via Claude Code's `Agent` tool with `subagent_type: stride-lite:hook-diagnostician` and the failure JSON as the prompt:
+
+```
+Dispatch stride-lite:hook-diagnostician on {"hook":"after_task","status":"failed","failed_command":"npm test", ...}
+```
+
+**It diagnoses; it never fixes.** Its tool grant is `Read, Grep, Glob` — no Bash, no Edit, no Write — so it cannot re-run the failing command, apply a fix, or touch a file. A blocking hook failure is still blocking after a diagnosis: the workflow still stops and you still decide.
+
+**It is not a lifecycle step.** Unlike the three task subagents above, it is dispatched on demand when a hook fails. The workflow does this for you on the `before_task` and `after_task` blocking paths; on the advisory `after_goal` path it is optional.
+
+**Ecosystem-agnostic.** `.stride_lite.md` hooks are whatever shell you wrote, so the agent identifies tools from the shape of their output rather than assuming a language. When it cannot recognize a tool it says so instead of guessing.
+
 **Convention when using the three task subagents:** run `stride-lite:task-enricher` FIRST if the task file has empty sections (it grounds them, and adds no section of its own), then `stride-lite:task-explorer` (during planning, before implementation), and `stride-lite:task-reviewer` LAST (after implementation). Both reports can coexist on the same file — Exploration above, Review at the bottom. If you reverse the order (reviewer first, explorer second), the explorer's "always last" contract from v0.6.0 will refuse to mutate; remove the Review Report manually and re-run explorer to recover.
 
 **Bash scope:** task-reviewer's tool list includes `Bash` (the only stride-lite agent that has it) so it can run `git diff` / `git log` to capture the change set. Bash is explicitly scoped to read-only git commands only — no `mix test`, `npm run`, `curl`, no mutating git operations (`commit`/`push`/`checkout`/`reset`).

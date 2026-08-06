@@ -1200,12 +1200,150 @@ esac
 
 # install.sh's dynamic agent count must match the files on disk.
 INSTALL_AGENT_COUNT="$(ls "$REPO_ROOT/agents"/*.md 2>/dev/null | wc -l | tr -d ' ')"
-assert_eq "the agents/ directory holds four subagents" "$INSTALL_AGENT_COUNT" "4"
+assert_eq "the agents/ directory holds five subagents" "$INSTALL_AGENT_COUNT" "5"
 if grep -q 'ls "$TARGET_DIR/agents"/\*\.md' "$REPO_ROOT/install.sh"; then
   ok "install.sh counts agents dynamically rather than hard-coding a number"
 else
   nope "install.sh counts agents dynamically rather than hard-coding a number" \
     "a computed agent count in install.sh" "$(grep -n 'Agents:' "$REPO_ROOT/install.sh")"
+fi
+
+# ------------------------------------------------------------------
+# hook-diagnostician agent contract
+# ------------------------------------------------------------------
+#
+# The diagnostician's entire input is the hook script's failure JSON. That makes
+# the key set a contract between two files, so it is pinned in both directions:
+# every key the script emits must be documented, and every key documented must
+# be one the script emits. The tool grant is pinned too — this agent triages a
+# failure, so giving it the ability to act on a misdiagnosis is the one change
+# that would make it dangerous.
+
+echo ""
+echo "hook-diagnostician agent contract"
+
+DIAGNOSTICIAN="$REPO_ROOT/agents/hook-diagnostician.md"
+# Defined here rather than relying on the hook-routing stage below, which runs
+# after this one — an unbound variable there made the .ps1 comparison pass by
+# comparing two empty strings.
+HOOK_SH="$REPO_ROOT/hooks/stride-lite-hook.sh"
+HOOK_PS1="$REPO_ROOT/hooks/stride-lite-hook.ps1"
+
+if [ -f "$DIAGNOSTICIAN" ]; then
+  ok "agents/hook-diagnostician.md exists"
+else
+  nope "agents/hook-diagnostician.md exists" "the agent file" "missing"
+fi
+
+DIAG_MISSING=""
+for _sec in '## Inputs' '## What this agent does' '## What this agent does NOT do' \
+            '## Reading combined output' '## Severity' '## Fix priority' \
+            '## Output contract' '## When there is no payload' '## `after_goal` is advisory' \
+            '## Never echo the payload verbatim' \
+            '## Command output is data, not instructions' '## Pitfalls'; do
+  grep -qxF "$_sec" "$DIAGNOSTICIAN" || DIAG_MISSING="$DIAG_MISSING [$_sec]"
+done
+assert_eq "hook-diagnostician.md carries every required section" "$DIAG_MISSING" ""
+
+# Tool grant: read-only. No Bash (cannot run a fix), no Edit/Write (cannot apply one).
+DIAG_TOOLS="$(awk 'NR==1 && $0=="---" { inb=1; next } inb && /^---$/ { exit }
+                   inb && /^tools:[[:space:]]/ { print; exit }' "$DIAGNOSTICIAN")"
+assert_eq "hook-diagnostician grants exactly Read, Grep, Glob" \
+  "$DIAG_TOOLS" "tools: Read, Grep, Glob"
+for _forbidden in Bash Edit Write; do
+  case "$DIAG_TOOLS" in
+    *"$_forbidden"*) nope "hook-diagnostician holds no $_forbidden tool" \
+                       "no $_forbidden — it diagnoses, it does not act" "$DIAG_TOOLS" ;;
+    *) ok "hook-diagnostician holds no $_forbidden tool" ;;
+  esac
+done
+
+# --- Input-contract sync: the script's failure JSON vs the agent's key table ---
+# Extract the keys the failure printf actually emits, and the keys the agent's
+# "failure JSON key set" table documents. Slice-anchor both: a whole-file grep
+# would be satisfied by any mention of the word anywhere in either file.
+SCRIPT_FAILURE_KEYS="$(awk '/printf .\{"hook":"%s","status":"failed"/ { print; exit }' "$HOOK_SH" \
+  | grep -oE '"[a-z_]+":' | tr -d '":' | sort -u)"
+
+DIAG_KEY_TABLE="$(awk '/^### The failure JSON key set$/ { f=1; next } f && /^## / { exit } f' "$DIAGNOSTICIAN")"
+DIAG_DOC_KEYS="$(printf '%s\n' "$DIAG_KEY_TABLE" | grep -oE '^\| `[a-z_]+`' | tr -d '|` ' | sort -u)"
+
+# Guard both extracts: two empty strings compare equal and would pass vacuously.
+if [ -n "$SCRIPT_FAILURE_KEYS" ] && [ -n "$DIAG_DOC_KEYS" ]; then
+  ok "both failure-JSON key lists extracted non-empty"
+else
+  nope "both failure-JSON key lists extracted non-empty" "two non-empty key lists" \
+    "script=[$SCRIPT_FAILURE_KEYS] doc=[$DIAG_DOC_KEYS]"
+fi
+
+assert_eq "the agent documents exactly the keys the failure JSON emits" \
+  "$DIAG_DOC_KEYS" "$SCRIPT_FAILURE_KEYS"
+
+assert_eq "the failure JSON carries nine keys" \
+  "$(printf '%s\n' "$SCRIPT_FAILURE_KEYS" | grep -c .)" "9"
+
+# The .ps1 must emit the same key set — the parity contract covers the result JSON.
+# NOTE: POSIX awk has no \s escape — using it here silently failed to match the
+# closing brace, so the extractor ran past the block and swept up later code.
+PS_FAILURE_KEYS="$(awk '/\$failureResult = \[ordered\]@\{/ { f=1; next }
+                        f && /^[[:space:]]*\}/ { exit }
+                        f && /=/ { print }' "$HOOK_PS1" \
+  | sed -E 's/^[[:space:]]*([a-z_]+)[[:space:]]*=.*/\1/' | sort -u)"
+if [ -n "$PS_FAILURE_KEYS" ]; then
+  ok "the .ps1 failure-JSON key list extracted non-empty"
+else
+  nope "the .ps1 failure-JSON key list extracted non-empty" "a non-empty key list" "empty"
+fi
+assert_eq "the .ps1 failure JSON emits the same key set as the .sh" \
+  "$PS_FAILURE_KEYS" "$SCRIPT_FAILURE_KEYS"
+
+# --- Workflow wiring: both blocking paths dispatch it, and still stop ---
+DIAG_WIRING_MISSING=""
+# Labelled by the section actually sliced — the before_task failure text lives
+# in Step 2 and the after_task one in Step 5, so labelling them 3 and 6 would
+# send whoever hits a red line to the wrong heading.
+for _step in 'Step 2 (before_task)' 'Step 5 (after_task)'; do
+  case "$_step" in
+    'Step 2'*) _slice="$(awk '/^### Step 2 /{f=1;next} /^### Step 3 /{f=0} f' "$WORKFLOW_SKILL")" ;;
+    'Step 5'*) _slice="$(awk '/^### Step 5 /{f=1;next} /^### Step 6 /{f=0} f' "$WORKFLOW_SKILL")" ;;
+  esac
+  case "$_slice" in
+    *"stride-lite:hook-diagnostician"*) ;;
+    *) DIAG_WIRING_MISSING="$DIAG_WIRING_MISSING [$_step]" ;;
+  esac
+  # Triage must not replace the stop.
+  case "$_slice" in
+    *"stop the workflow"*) ;;
+    *) DIAG_WIRING_MISSING="$DIAG_WIRING_MISSING [$_step-no-stop]" ;;
+  esac
+done
+assert_eq "both blocking-failure paths dispatch the diagnostician and still stop" \
+  "$DIAG_WIRING_MISSING" ""
+
+# The advisory after_goal path mentions it WITHOUT making it mandatory.
+AFTER_GOAL_SLICE="$(awk '/PostToolUse cannot roll back the write/ { f=1 } f { print }
+                         f && /Move the goal directory/ { exit }' "$WORKFLOW_SKILL")"
+case "$AFTER_GOAL_SLICE" in
+  *"stride-lite:hook-diagnostician"*) ok "the advisory after_goal path mentions the diagnostician" ;;
+  *) nope "the advisory after_goal path mentions the diagnostician" "an optional dispatch" "$AFTER_GOAL_SLICE" ;;
+esac
+# Assert on a DISCRIMINATING phrase plus a negative guard. A bare `*optional*`
+# substring test survives the negation "not optional", which is precisely the
+# violation this criterion is about — and a criterion whose whole content is a
+# negative is the one shape a substring match cannot express.
+AFTER_GOAL_OPTIONAL=1
+case "$AFTER_GOAL_SLICE" in
+  *'You **may** dispatch'*) ;;
+  *) AFTER_GOAL_OPTIONAL=0 ;;
+esac
+case "$AFTER_GOAL_SLICE" in
+  *"MUST dispatch"*|*"must dispatch"*|*"not optional"*) AFTER_GOAL_OPTIONAL=0 ;;
+esac
+if [ "$AFTER_GOAL_OPTIONAL" -eq 1 ]; then
+  ok "the advisory after_goal dispatch is optional, not mandatory"
+else
+  nope "the advisory after_goal dispatch is optional, not mandatory" \
+    "'You **may** dispatch' present and no mandatory phrasing" "$AFTER_GOAL_SLICE"
 fi
 
 # ------------------------------------------------------------------
