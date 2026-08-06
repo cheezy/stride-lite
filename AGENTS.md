@@ -4,7 +4,7 @@ Project guidelines for AI agents working **on** the Stride Lite plugin codebase 
 
 ## What this plugin is
 
-A Claude Code plugin that turns a free-text prompt plus an optional requirements directory into Stride-shaped markdown documents on disk, then drives those documents through a file-based task lifecycle. Three slash commands (`/stride-lite:create-goal`, `/stride-lite:create-task`, `/stride-lite:init`), four skills (the three create/init flows plus the v0.8.0 `stride-lite-workflow` orchestrator), five subagents (`create-decomposer`, `hook-diagnostician`, `task-enricher`, `task-explorer`, `task-reviewer`), five `lib/` helpers, a `hooks/` enforcement layer (added v0.9.0 — `hooks.json` + `stride-lite-hook.sh` + `stride-lite-hook.ps1`) registered with Claude Code's PreToolUse/PostToolUse harness so the three `.stride_lite.md` hooks auto-fire at the right lifecycle intercept points — but only while the workflow skill is actually driving a goal, which it signals with an activation marker at `.stride-lite/.orchestrator_active`; a standalone agent dispatch finds no fresh marker and fires nothing. Each command the hooks do run receives a derived `HOOK_NAME` / `TASK_*` / `GOAL_*` / `AGENT_NAME` environment block, and there are zero API calls. The create/init flows are bounded scaffolders; the workflow skill runs an eight-step loop (next task → enrichment check (dispatches task-enricher only when the task file's key sections are sparse) → before_task hook (auto-fired pre-explorer-dispatch) → explorer → implement → after_task hook (auto-fired pre-reviewer-dispatch) → reviewer → review-loop → completion summary → after_goal hook (auto-fired on the goal.md write) on final task), with the explorer and reviewer dispatches — and the two hooks that fire on them — gated by a complexity decision matrix. There is no kanban server, no claim/complete loop — the `.stride_lite.md` hooks ARE executed (by the harness, v0.9.0+) but everything happens locally against the file tree.
+A Claude Code plugin that turns a free-text prompt plus an optional requirements directory into Stride-shaped markdown documents on disk, then drives those documents through a file-based task lifecycle. Three slash commands (`/stride-lite:create-goal`, `/stride-lite:create-task`, `/stride-lite:init`), four skills (the three create/init flows plus the v0.8.0 `stride-lite-workflow` orchestrator), five subagents (`create-decomposer`, `hook-diagnostician`, `task-enricher`, `task-explorer`, `task-reviewer`), five `lib/` helpers, a `hooks/` enforcement layer (added v0.9.0 — `hooks.json` + `stride-lite-hook.sh` + `stride-lite-hook.ps1`) registered with Claude Code's PreToolUse/PostToolUse harness so the three `.stride_lite.md` hooks auto-fire at the right lifecycle intercept points — but only while the workflow skill is actually driving a goal, which it signals with an activation marker at `.stride-lite/.orchestrator_active`; a standalone agent dispatch finds no fresh marker and fires nothing. Each command the hooks do run receives a derived `HOOK_NAME` / `TASK_*` / `GOAL_*` / `AGENT_NAME` environment block, and there are zero API calls. The create/init flows are bounded scaffolders; the workflow skill runs an eight-step loop (next task → enrichment check (dispatches task-enricher only when the task file's key sections are sparse) → before_task hook (auto-fired pre-explorer-dispatch) → explorer → implement → after_task hook (auto-fired pre-reviewer-dispatch) → reviewer → three optional gated sub-steps (exploratory session, harden, security-considerations review — each skipped cleanly when the plugin it needs is absent) → review-loop → completion summary → after_goal hook (auto-fired on the goal.md write) on final task), with the explorer and reviewer dispatches — and the two hooks that fire on them — gated by a complexity decision matrix. There is no kanban server, no claim/complete loop — the `.stride_lite.md` hooks ARE executed (by the harness, v0.9.0+) but everything happens locally against the file tree.
 
 ## Repository layout
 
@@ -16,6 +16,8 @@ stride-lite/
     hooks.json                  ← Claude Code PreToolUse/PostToolUse handler registration (cross-platform)
     stride-lite-hook.sh         ← bash executor for macOS/Linux (delegates to .ps1 on native Windows; gates on the activation marker, derives and exports the hook env block)
     stride-lite-hook.ps1        ← PowerShell executor for Windows (behavior-equivalent to .sh, including the marker gate and the exported env key set)
+    test-stride-lite-hook.sh    ← dedicated suite for the bash executor's internals (install.sh removes it from an installed plugin)
+    test-stride-lite-hook.ps1   ← the PowerShell counterpart, driving the .ps1's functions by AST extraction
   commands/
     create-goal.md              ← /stride-lite:create-goal slash command shell
     create-task.md              ← /stride-lite:create-task slash command shell
@@ -37,8 +39,15 @@ stride-lite/
     slugify.md                  ← normalize a title into a filesystem-safe slug
     resolve_output_path.md      ← produce a unique <base>/<slug>(.<ext>)? path
     select_workflow_branch.md   ← resolve a task file to a decision-matrix branch (skip-all | explore-review | full)
+  install.sh                    ← copy-install into ~/.claude/plugins (removes the hook test suites; --force to overwrite)
+  test/
+    smoke.sh                    ← the plugin's surface suite: templates, agent contracts, the workflow skill, hook routing and env injection
+  fixtures/                     ← expected-output fixtures the smoke suite diffs against
+  docs/                         ← the plugin's own goal directories, driven by its own workflow
   README.md                     ← user-facing intro and command reference
   AGENTS.md                     ← this file
+  SECURITY.md                   ← threat surface: what executes, what the marker is not, the cross-plugin dispatches, reporting
+  CHANGELOG.md                  ← Keep-a-Changelog entries; the version itself lives ONLY in .claude-plugin/plugin.json
   LICENSE                       ← MIT
 ```
 
@@ -101,7 +110,7 @@ When extending the plugin, add new helpers under `lib/`, new agents under `agent
 ## What NOT to add
 
 - **No Elixir/Phoenix-specific guidance.** Stride Lite is project-agnostic. The full Stride plugin has Phoenix conventions baked in; this plugin does not.
-- **No multi-harness fallbacks.** v0.1.0 is Claude Code only. Adding Codex/Cursor/Continue paths is out of scope until the harness story is settled in a later release.
+- **No multi-harness fallbacks.** This plugin is Claude Code only. Adding Codex/Cursor/Continue paths is out of scope until the harness story is settled in a later release. **The gated Steps 6a/6b/6c are not an exception to this and must not be read as one:** they dispatch agents belonging to *other Claude Code plugins*, which is a different thing from supporting another harness. Both are optional, both are skipped when the plugin is absent, and neither introduces a second execution environment.
 - **No server-mediated lifecycle.** Stride Lite has no kanban server, no claim/complete API. As of v0.9.0, the `hooks/` directory holds a Claude Code-level enforcement layer (`hooks.json` + `stride-lite-hook.sh` + `stride-lite-hook.ps1`) that auto-fires the three `.stride_lite.md` hooks (`before_task` on `Agent`+`stride-lite:task-explorer` dispatch, `after_task` on `Agent`+`stride-lite:task-reviewer` dispatch, `after_goal` on the goal.md `Edit`/`Write` that appends `## Completion Summary`). The workflow skill body no longer executes hooks directly — the harness does, so the enforcement survives skill amendments.
 - **No API client.** A `curl` invocation, a Stride client wrapper, or an HTTP library import is a contract violation. The whole point of this plugin is "no network." Dispatching `stride-exploratory-testing`'s agent from the workflow's gated Steps 6a/6b is **not** such a violation and is **not** a precedent for one — see the hard rule above.
 - **No hard dependency on another plugin.** The exploratory-testing and security-review integrations are optional in both directions: every gate is checked at runtime against this session's available surfaces, a closed gate is a clean skip, and nothing in `plugin.json` or any skill requires `stride-exploratory-testing` or `stride-security-review` to be installed. Do not add a required dependency, and do not execute another plugin's content to probe for its presence — check availability only.

@@ -85,6 +85,7 @@ cp -a "$SRC_DIR/hooks" "$TARGET_DIR/"
 rm -f "$TARGET_DIR/hooks"/test-stride-lite-hook.*
 cp -a "$SRC_DIR/README.md" "$TARGET_DIR/"
 cp -a "$SRC_DIR/AGENTS.md" "$TARGET_DIR/"
+cp -a "$SRC_DIR/SECURITY.md" "$TARGET_DIR/"
 cp -a "$SRC_DIR/LICENSE" "$TARGET_DIR/"
 cp -a "$SRC_DIR/CHANGELOG.md" "$TARGET_DIR/"
 

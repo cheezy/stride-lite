@@ -2,6 +2,42 @@
 
 All notable changes to **Stride Lite** are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0] — 2026-08-06
+
+> This release adds three optional gated sub-steps to the workflow, each dispatching an agent from a **different** plugin. All three are skipped cleanly when that plugin is not installed, and a closed gate never fails a task — so an install without `stride-exploratory-testing` or `stride-security-review` behaves exactly as it did before. The plugin still makes no network request of its own; a dispatch is a local tool call.
+
+### Added — SECURITY.md (W2019)
+
+The plugin executes arbitrary user-authored shell commands from `.stride_lite.md` — the single most security-relevant thing it does — and had no document saying so. `SECURITY.md` now states the trust boundary plainly: the commands come from a file in the user's own repository, run with their privileges, and are never validated, wrapped, escaped or rewritten by the plugin. It also records what the activation marker is **not** — a coordination signal, forgeable by any local process, never an authorization — so no future change leans on it; the three cross-plugin dispatch surfaces and the user-supplied affirmative that gates the riskiest of them; the sanitization applied to every exported env value; and the two known PowerShell divergences, including the honest statement that the `.ps1` executor has **not** been verified on a real Windows host, only driven under `pwsh` on macOS.
+
+### Added — manual & exploratory testing, gated (W2015)
+
+Step 6a maps a task's manual-test entries to charters and dispatches `stride-exploratory-testing:explorer`, one per charter, with an explicit session budget read from the installed agent's own contract rather than hard-coded here. `stride-exploratory-testing:explorer` is the only sanctioned surface: `/explore`, `/pair`, `/recon`, `/nightmare-headline` and the router skill are each forbidden with their own reason, because each can require a human and this workflow never prompts between steps. The authorized-and-non-production affirmative is collected at Step 0 or never — inferring it from a `localhost` URL *is* supplying it on the user's behalf. Step 6b then dispatches `/harden` on confirmed findings; drafts stage outside the test tree and are never reported as passing, because `/harden` holds no test runner.
+
+### Added — deep security-considerations review, gated (W2016)
+
+Step 6c dispatches `stride-security-review:security-reviewer` in explicitly-declared considerations mode and captures one verdict per listed consideration. The mode declaration is load-bearing: the agent assumes `diff` mode when the tag is missing and emits the verdict array only in considerations mode, so an undeclared mode returns a plausible review with no verdicts at all. Fail-closed means a consideration is never dispositioned as `mitigated` on the strength of a verdict set that could not be read — an eight-row anomaly table sends every unreadable shape to Step 7's new security-escalation branch, which reuses the existing `max_review_iterations` cap rather than adding one. A dispatch that fails outright is the one exception: it is a clean skip, because looping on an unavailable third-party agent would let it terminate every task in a goal.
+
+### Added — anti-rationalization scaffolding across all four skills (W2017)
+
+Every skill now carries a Red flags list and a Rationalization Table, and the workflow skill gains a Quick reference card. The rows are written for this plugin's actual failure modes rather than ported from stride, whose tables cite API endpoints, batch root keys and review queues that do not exist here — a table full of irrelevant rows trains agents to skim it. The card indexes the loop by **gating** rather than step order, because gating is the one dimension the loop's own structure cannot express. Two rows are controls rather than prose, and `AGENTS.md` now says so: softening them would weaken a safety property while looking like a copy-edit.
+
+### Added — dedicated hook test suites with a PowerShell mirror (W2018)
+
+`hooks/test-stride-lite-hook.sh` and `hooks/test-stride-lite-hook.ps1` cover what `test/smoke.sh` structurally could not: the section executor's internals, the derivation helpers branch by branch, and the main-flow guards no fixture reached. They get there through the sourcing affordance the hook script has documented since v0.9.0 and which nothing had ever used. The division is by level of access — `test/smoke.sh` owns the subprocess contract, the new suites own function internals — and neither re-asserts the other's cases. The `.ps1`'s section executor is tested for the first time; the stdin defect that blocks an end-to-end run does not block calling a function.
+
+### Fixed — the workflow skill's own claims about the hook environment
+
+The workflow documentation, `README.md` and `AGENTS.md` were swept for statements the preceding tasks made false: the eight-step loop summary now names the three gated sub-steps, the repository layout lists the new files, and the "no multi-harness fallbacks" rule explicitly states that dispatching another *plugin's* agent is not the thing it forbids. The telemetry vocabulary grew from seven names to ten, and every rendering of it — the contract example, three walkthrough iterations, and the README's count — moved together.
+
+### Changed — `install.sh` no longer ships the test suites
+
+`hooks/` is copied wholesale, so the two new suites would have landed in every installed plugin as dead weight. They are removed after the copy. `SECURITY.md` is now copied.
+
+### Verification
+
+`test/smoke.sh` more than tenfold its v0.11.0 size, and two new hook suites join it. Deliberately no totals here: the previous draft of this paragraph carried two hard-coded assertion counts and **both were wrong** — one measured against the wrong baseline, the other stale before the release shipped. A number in release prose describes the moment it was typed, and the plugin's own pitfalls say to prefer count-agnostic wording for exactly this reason. `test/smoke.sh` prints its own total on every run, which is the only place it can be right. The two bash suites are green on stock bash 3.2 and under a sandbox path containing a space, and `test-stride-lite-hook.sh` reports named skips rather than passing silently when no PowerShell is on `PATH`; the PowerShell mirror is green under `pwsh`. Every new assertion was mutation-tested, which found and closed several cases where a green suite was concealing nothing — including, during review of this very entry, two wrong numbers in this paragraph.
+
 ## [0.11.0] — 2026-07-02
 
 > **If you installed stride-lite by running `./install.sh` (rather than symlinking the checkout), re-run the installer after updating.** Every copy install made before v0.11.0 is missing the `hooks/` enforcement layer entirely — the documented `.stride_lite.md` hook auto-fire never worked on that install path (W1481 below). A fresh `./install.sh --force` run from this version ships it.

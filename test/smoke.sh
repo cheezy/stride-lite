@@ -2277,6 +2277,170 @@ for _name in exploratory harden; do
 done
 
 echo ""
+echo "release surface"
+
+# ---------------------------------------------------------------------------
+# The documented counts and the shipped files must agree. Every one of these
+# was a hand-maintained number in prose, which is precisely the class of
+# staleness the CHANGELOG records fixing release after release.
+# ---------------------------------------------------------------------------
+RS_AGENTS="$REPO_ROOT/AGENTS.md"
+RS_README="$REPO_ROOT/README.md"
+RS_SEC="$REPO_ROOT/SECURITY.md"
+RS_PLUGIN="$REPO_ROOT/.claude-plugin/plugin.json"
+RS_CHANGELOG="$REPO_ROOT/CHANGELOG.md"
+
+# --- SECURITY.md exists and covers what it must ---------------------------
+if [ -s "$RS_SEC" ]; then
+  ok "SECURITY.md exists at the repo root"
+else
+  nope "SECURITY.md exists at the repo root" "a non-empty SECURITY.md" "missing or empty"
+fi
+# The execution model is the whole reason the file exists: the plugin runs
+# user-authored shell commands and deliberately does not validate them.
+assert_has "SECURITY.md states the plugin runs user-authored commands" "$RS_SEC" \
+    "executes shell commands that the user wrote"
+assert_has "SECURITY.md states it does not validate them" "$RS_SEC" \
+    "deliberately does not validate them"
+# The marker's non-security status, so no future change leans on it.
+assert_has "SECURITY.md states the marker is not an authorization mechanism" "$RS_SEC" \
+    "not an authorization mechanism"
+assert_has "SECURITY.md says any local process can forge the marker" "$RS_SEC" \
+    "process can create the file"
+# The cross-plugin surfaces and the affirmative that gates the riskiest.
+assert_has "SECURITY.md covers the cross-plugin dispatch surfaces" "$RS_SEC" \
+    "Cross-plugin dispatch surfaces"
+assert_has "SECURITY.md names the affirmative as a user-supplied control" "$RS_SEC" \
+    "authorized-and-non-production affirmative"
+assert_has "SECURITY.md states a dispatch is not a network call" "$RS_SEC" \
+    "A dispatch is not a network call"
+assert_has "SECURITY.md gives a reporting channel" "$RS_SEC" "## Reporting"
+# An overstated security claim in a shipped document is itself a risk, so the
+# one thing that has NOT been verified must say so.
+assert_has "SECURITY.md does not overclaim Windows verification" "$RS_SEC" \
+    "has not been verified on a real Windows host"
+# The marker gate is NOT unconditional -- an environment variable bypasses it.
+# Describing it as absolute gives a security reviewer a model the code does not
+# have, which is the failure mode the fifth consideration names.
+assert_has "SECURITY.md names the marker-gate bypass" "$RS_SEC" \
+    "STRIDE_LITE_ALLOW_DIRECT=1"
+assert_has "SECURITY.md explains why the bypass supports the model" "$RS_SEC" \
+    "A gate anyone can turn off with an environment variable"
+
+# --- Documented counts match the filesystem -------------------------------
+RS_COUNT_BAD=""
+_rs_check() {  # $1 = human number word, $2 = actual count, $3 = what
+  local _word="$1" _actual="$2" _what="$3" _expect
+  case "$_actual" in
+    3) _expect=three ;; 4) _expect=four ;; 5) _expect=five ;; 6) _expect=six ;;
+    7) _expect=seven ;; 8) _expect=eight ;; 9) _expect=nine ;; 10) _expect=ten ;;
+    *) _expect="$_actual" ;;
+  esac
+  [ "$_word" = "$_expect" ] || RS_COUNT_BAD="$RS_COUNT_BAD [$_what: doc says $_word, tree has $_actual]"
+}
+_rs_check "$(grep -oE '(three|four|five|six|seven|eight|nine|ten) subagents' "$RS_AGENTS" | head -1 | awk '{print $1}')" \
+          "$(ls "$REPO_ROOT"/agents/*.md 2>/dev/null | grep -c .)" "subagents"
+_rs_check "$(grep -oE '(three|four|five|six|seven|eight|nine|ten) \`lib/\` helpers' "$RS_AGENTS" | head -1 | awk '{print $1}')" \
+          "$(ls "$REPO_ROOT"/lib/*.md 2>/dev/null | grep -c .)" "lib helpers"
+_rs_check "$(grep -oE '(three|four|five|six|seven|eight|nine|ten) skills' "$RS_AGENTS" | head -1 | awk '{print $1}')" \
+          "$(ls -d "$REPO_ROOT"/skills/*/ 2>/dev/null | grep -c .)" "skills"
+_rs_check "$(grep -oiE '(three|four|five|six|seven|eight|nine|ten) slash commands' "$RS_AGENTS" | head -1 | awk '{print tolower($1)}')" \
+          "$(ls "$REPO_ROOT"/commands/*.md 2>/dev/null | grep -c .)" "slash commands"
+assert_eq "every count documented in AGENTS.md matches the tree" "$RS_COUNT_BAD" ""
+
+# Every agent file must appear in the layout block, so a new subagent cannot be
+# added without the map noticing.
+# Extract the fenced layout block FIRST. Grepping the whole file meant
+# hooks.json and the two executors -- each named several times in the prose --
+# were "found" no matter what the layout block said, so the assertion covered
+# only the files that did not need it.
+RS_LAYOUT="$SANDBOX/agents-layout.txt"
+awk '/^## Repository layout$/{f=1;next} f && /^## /{exit} f' "$RS_AGENTS" > "$RS_LAYOUT"
+if [ -s "$RS_LAYOUT" ]; then
+  ok "the AGENTS.md layout block extracted non-empty"
+else
+  nope "the AGENTS.md layout block extracted non-empty" "content" "(empty)"
+fi
+RS_LAYOUT_MISSING=""
+for _a in "$REPO_ROOT"/agents/*.md; do
+  _b="$(basename "$_a")"
+  grep -qF -- "$_b" "$RS_LAYOUT" || RS_LAYOUT_MISSING="$RS_LAYOUT_MISSING [$_b]"
+done
+assert_eq "every agent file appears in the AGENTS.md layout block" "$RS_LAYOUT_MISSING" ""
+# ...and the same for the lib helpers and the hooks directory's shipped files.
+RS_LIB_MISSING=""
+for _l in "$REPO_ROOT"/lib/*.md; do
+  grep -qF -- "$(basename "$_l")" "$RS_LAYOUT" || RS_LIB_MISSING="$RS_LIB_MISSING [$(basename "$_l")]"
+done
+assert_eq "every lib helper appears in the AGENTS.md layout block" "$RS_LIB_MISSING" ""
+RS_HOOKS_MISSING=""
+for _h in "$REPO_ROOT"/hooks/*; do
+  grep -qF -- "$(basename "$_h")" "$RS_LAYOUT" || RS_HOOKS_MISSING="$RS_HOOKS_MISSING [$(basename "$_h")]"
+done
+assert_eq "every hooks/ file appears in the AGENTS.md layout block" "$RS_HOOKS_MISSING" ""
+# ...and every top-level entry, since SECURITY.md and README both send readers
+# to install.sh and test/smoke.sh, neither of which the map used to list.
+RS_TOP_MISSING=""
+for _t in install.sh test fixtures docs README.md AGENTS.md SECURITY.md CHANGELOG.md LICENSE; do
+  [ -e "$REPO_ROOT/$_t" ] || continue
+  grep -qF -- "$_t" "$RS_LAYOUT" || RS_TOP_MISSING="$RS_TOP_MISSING [$_t]"
+done
+assert_eq "every top-level entry appears in the AGENTS.md layout block" "$RS_TOP_MISSING" ""
+
+# --- The version has exactly one source -----------------------------------
+RS_VERSION="$(grep -oE '"version": *"[0-9]+\.[0-9]+\.[0-9]+"' "$RS_PLUGIN" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')"
+if [ -n "$RS_VERSION" ]; then
+  ok "plugin.json carries a semver version"
+else
+  nope "plugin.json carries a semver version" "a version field" "(none)"
+fi
+# The CHANGELOG's top entry must name that version, which is the pairing
+# AGENTS.md makes a hard rule.
+assert_eq "the CHANGELOG's top entry matches plugin.json" \
+  "$(grep -oE '^## \[[0-9]+\.[0-9]+\.[0-9]+\]' "$RS_CHANGELOG" | head -1 | tr -d '#[] ')" "$RS_VERSION"
+# ...and it is stated nowhere else, so a bump can never half-land.
+assert_eq "the version is not hard-coded outside plugin.json" \
+  "$(grep -rlF -- "$RS_VERSION" "$REPO_ROOT" --include=*.md --include=*.sh --include=*.json 2>/dev/null \
+     | grep -v CHANGELOG.md | grep -v 'plugin.json' | grep -c . || true)" "0"
+
+# The CHANGELOG must not carry a hard-coded assertion total. The previous draft
+# did, and both numbers were wrong -- in the very paragraph announcing the
+# assertions added to stop that. A count in release prose describes the moment
+# it was typed; the suite prints its own on every run, which is the only place
+# it can be right. This is the plugin's own pitfall, enforced.
+RS_CL_TOP="$SANDBOX/changelog-top.txt"
+awk 'NR>1 && /^## \[/{n++} n==1' "$RS_CHANGELOG" > "$RS_CL_TOP"
+if [ -s "$RS_CL_TOP" ]; then
+  ok "the CHANGELOG's top entry extracted non-empty"
+else
+  nope "the CHANGELOG's top entry extracted non-empty" "content" "(empty)"
+fi
+assert_eq "the CHANGELOG's top entry states no hard-coded suite total" \
+  "$(grep -cE '[0-9]+ (assertions|passed)' "$RS_CL_TOP" || true)" "0"
+assert_has "the CHANGELOG says why it carries no totals" "$RS_CHANGELOG" \
+    "Deliberately no totals here"
+
+# --- install.sh ships every root document ---------------------------------
+RS_INSTALL_MISSING=""
+for _f in README.md AGENTS.md SECURITY.md LICENSE CHANGELOG.md; do
+  grep -qF -- "\$SRC_DIR/$_f" "$REPO_ROOT/install.sh" || RS_INSTALL_MISSING="$RS_INSTALL_MISSING [$_f]"
+done
+assert_eq "install.sh copies every root document" "$RS_INSTALL_MISSING" ""
+
+# A security document nobody is pointed at is a document nobody reads.
+assert_has "the README points at SECURITY.md" "$RS_README" "[\`SECURITY.md\`](SECURITY.md)"
+assert_has "the README states the trust model in its own words" "$RS_README" \
+    "runs them verbatim with your privileges"
+
+# --- The no-network contract survived the whole release -------------------
+# Scan the SHIPPED scripts only. The markdown legitimately discusses what the
+# plugin does not do, and a whole-tree grep would fire on every prohibition.
+RS_NET="$(grep -nE '(^|[^a-zA-Z_-])(curl|wget|nc)[[:space:]]' \
+  "$REPO_ROOT"/install.sh "$REPO_ROOT"/hooks/*.sh "$REPO_ROOT"/hooks/*.ps1 2>/dev/null \
+  | grep -v 'test-stride-lite-hook' || true)"
+assert_eq "no shipped script makes a network call" "$RS_NET" ""
+
+echo ""
 echo "the dedicated hook test suites"
 
 # ---------------------------------------------------------------------------
