@@ -240,7 +240,7 @@ Activate stride-lite-workflow on docs/implementation/PENDING/add-notifications/
 7. **Review-loop decision** — parse the review's status: `approved` → continue; `changes_requested` → loop back to step 4 (capped at **3 iterations** by default; configurable via `max_review_iterations`)
 8. **Completion summary + archive move** — append `## Completion Summary` to the task file, ending in a `### Workflow telemetry` subsection that records all ten loop steps as dispatched or skipped, with a duration where one was measured and a reason naming the rule where one was not. Every step is recorded every time — an omitted step and a skipped step look identical otherwise, and only one of those is a shortcut. If this was the final task in the goal (no `task(K+1).md` exists), also append `## Completion Summary` to `goal.md`, run the `## after_goal` hook, and (as of **v0.10.0**) move the goal directory from `PENDING/` to `IMPLEMENTED/` (skipped with a warning if `after_goal` failed or the goal isn't under `/PENDING/`)
 
-**Decision matrix.** Steps 3, 3a and 6 are gated on two values the task file already carries — its `Complexity:` and the number of distinct paths in its `## Key files` table:
+**Decision matrix.** Steps 3, 3a and 6 are gated on two values the task file already carries — its `Complexity:` and the number of distinct entries in its `## Key files` section, counting table rows and list items alike:
 
 | Complexity | Key files | Explore | Plan | Review |
 |---|---|:---:|:---:|:---:|

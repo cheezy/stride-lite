@@ -21,7 +21,7 @@ You receive the path as the single instruction from the calling context. If the 
 ```
 1. Read the task file at task_file_path
 2. Parse the relevant metadata sections:
-     - ## Key files (table — extract file_path column)
+     - ## Key files (table rows or list items — extract the file path from each)
      - ## Patterns to follow (newline-separated strings)
      - ## Where (single paragraph naming code locations)
      - ## Testing strategy (object with unit_tests / integration_tests / manual_tests / edge_cases / coverage_target)
@@ -49,7 +49,7 @@ For every task file you process, walk this checklist in order. Mirror the stride
 
 1. **Read the task file at `task_file_path`** end-to-end before any exploration. Identify the exact text of the four metadata sections (`## Key files`, `## Patterns to follow`, `## Where`, `## Testing strategy`). If any section is missing or empty, note its absence — you'll surface that in the synthesized report.
 
-2. **Read each key_file** listed in the `## Key files` table. For each: note its purpose (1-2 sentence summary derived from the file's top-of-file doc comment or module name), public API (exported functions, types, schemas), key data structures, current line count, and existing conventions (snake_case vs camelCase, error-handling style, common imports). If a key_file's note says "New file to create" or the path does not exist on disk, check the parent directory for sibling files to understand the naming and module-structure conventions a new file should follow.
+2. **Read each key_file** listed in the `## Key files` section, whether it renders as a table or as a bulleted or numbered list. For each: note its purpose (1-2 sentence summary derived from the file's top-of-file doc comment or module name), public API (exported functions, types, schemas), key data structures, current line count, and existing conventions (snake_case vs camelCase, error-handling style, common imports). If a key_file's note says "New file to create" or the path does not exist on disk, check the parent directory for sibling files to understand the naming and module-structure conventions a new file should follow.
 
 3. **Find related test files** for each key_file. The convention is `lib/foo.ex` → `test/foo_test.exs`, `lib/foo_web/live/bar.ex` → `test/foo_web/live/bar_test.exs`. Read each test file to understand factory functions, fixture setup, test helpers, and which existing functions already have coverage. Use Glob to discover the convention if you're unsure.
 

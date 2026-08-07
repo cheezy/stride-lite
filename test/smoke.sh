@@ -368,7 +368,7 @@ fi
 # --- BEGIN mirrored lib/select_workflow_branch.md reference implementation ---
 select_workflow_branch() {
   local task_file="${1:-}"
-  local complexity="" in_key_files=0 saw_key_files=0 line lower path probe
+  local complexity="" in_key_files=0 saw_key_files=0 line lower path probe digits
   local -a seen=()
 
   if [ -n "$task_file" ] && [ -f "$task_file" ] && [ -r "$task_file" ]; then
@@ -412,13 +412,46 @@ select_workflow_branch() {
       esac
 
       [ "$in_key_files" -eq 1 ] || continue
+
+      # Two entry shapes declare a key file. A TABLE row is what the template
+      # renders. A BULLET is what a hand-written section usually carries, and
+      # counting only rows made such a section zero here while the enrichment
+      # gate read it as populated — two parsers describing one section
+      # incompatibly, which is how a multi-file task reached skip-all.
+      # Anything else in the section is prose: a sentence that merely mentions
+      # a path is not a declaration, so it still counts nothing.
       case "$line" in
-        '|'*) ;;
+        '|'*)
+          path="${line#|}"
+          path="${path%%|*}"
+          ;;
+        '- '*|'* '*|'+ '*)
+          # Cut at the em dash the bullet form puts between a path and its
+          # note. With no em dash the whole entry is the identity, which keeps
+          # two sentence-shaped bullets distinct instead of collapsing them
+          # onto a shared first word — collapsing undercounts toward skip-all.
+          path="${line#?}"
+          path="${path#"${path%%[![:space:]]*}"}"
+          path="${path%% — *}"
+          ;;
+        [0-9]*)
+          # An ordered list declares a key file exactly as a bullet does, and a
+          # hand-written section is as likely to number its files as to bullet
+          # them. Strip the digit run and one "." or ")", then REQUIRE the
+          # following space: without it, prose that merely opens with a number
+          # ("2026-08-06 shipped this. See lib/a.ex") would count as an entry.
+          digits="${line%%[!0-9]*}"
+          path="${line#"$digits"}"
+          case "$path" in
+            '. '*|') '*) path="${path#?}" ;;
+            *) continue ;;
+          esac
+          path="${path#"${path%%[![:space:]]*}"}"
+          path="${path%% — *}"
+          ;;
         *) continue ;;
       esac
 
-      path="${line#|}"
-      path="${path%%|*}"
       path="${path#"${path%%[![:space:]]*}"}"
       path="${path%"${path##*[![:space:]]}"}"
       path="${path#\`}"
@@ -427,7 +460,8 @@ select_workflow_branch() {
       # Header and separator rows both begin with "|" — drop them. Strip the
       # characters a separator can legally contain and see whether anything is
       # left; a bracket expression like [!-:| ] is read as a RANGE and silently
-      # drops real paths.
+      # drops real paths. The same filters then run over a bullet's identity so
+      # both shapes dedupe against one another on equal terms.
       [ -z "$path" ] && continue
       [ "$path" = "File" ] && continue
       # Case-insensitive, so this agrees with the enrichment gate's placeholder
@@ -1027,8 +1061,21 @@ count_sparse_sections() {
     # A prose or bullet line. Strip one bullet marker, then compare the WHOLE
     # line with "(none)" — a substring match would misclassify the shipped
     # fixture's "- (none for this task — ...)" prose as a placeholder.
+    # Every marker select_workflow_branch recognizes must be stripped here too.
+    # It is the mismatch that bites: a marker one parser knows and the other
+    # does not turns "+ (none)" into a placeholder to one and content to the
+    # other, which is the same two-parsers-one-section split D216 closed.
     cell="${line#- }"
     cell="${cell#\* }"
+    cell="${cell#+ }"
+    case "$cell" in
+      [0-9]*)
+        probe="${cell%%[!0-9]*}"
+        case "${cell#"$probe"}" in
+          '. '*|') '*) cell="${cell#"$probe"}"; cell="${cell#?}"; cell="${cell# }" ;;
+        esac
+        ;;
+    esac
     cell="${cell#\`}"
     cell="${cell%\`}"
     case "$(printf '%s' "$cell" | tr '[:upper:]' '[:lower:]')" in
@@ -1132,12 +1179,13 @@ assert_eq "the shipped fully-populated fixture reports nothing sparse" \
   "$(count_sparse_sections "$REPO_ROOT/fixtures/expected-output/task1.md")" "0"
 
 # --- The enrichment gate and the decision matrix must agree ----------------
-# They read the same ## Key files TABLE with two different parsers. If they
+# They read the same ## Key files section with two different parsers. If they
 # disagree, a task can be judged "has key files" (no enrichment) and "zero key
-# files" (skip-all) at once — neither enriched nor reviewed. The agreement is
-# scoped to table-shaped bodies: select_workflow_branch counts rows only, so a
-# bullet-list key-files section is zero there and populated here. That is a
-# pre-existing limitation of that helper, recorded in its own Edge cases.
+# files" (skip-all) at once — neither enriched nor reviewed. The agreement
+# covers table bodies AND bullet bodies. It stops at prose: the gate reads any
+# non-placeholder line as populated, while the matrix counts only declarations,
+# because counting sentences as files would branch on how wordy an author was.
+# That single remaining divergence is asserted explicitly further down.
 assert_eq "bare (none) key files: sparse here, skip-all in the matrix" \
   "$(count_sparse_sections "$MATRIX_DIR/t-small-0.md")/$(select_workflow_branch "$MATRIX_DIR/t-small-0.md")" \
   "1/skip-all"
@@ -1176,6 +1224,130 @@ assert_eq "capital heading with two real files: not sparse, and the matrix revie
 assert_eq "a (none)-only key-files table: sparse here, skip-all in the matrix" \
   "$(count_sparse_sections "$ENRICH_TABLE_DIR/none-row.md")/$(select_workflow_branch "$ENRICH_TABLE_DIR/none-row.md")" \
   "1/skip-all"
+
+# --- Bullet-list key-files sections (D216) ---------------------------------
+# A hand-written section usually carries bullets, not the template's table.
+# Counting rows only made such a section zero in the matrix while the gate read
+# it as populated, so a task naming three real files got no explorer, no
+# reviewer, and no hooks. The first assertion below is the one that fails
+# without the fix — it is the positive control for the block.
+BULLET_DIR="$ENRICH_TABLE_DIR/bullets"
+mkdir -p "$BULLET_DIR"
+
+_write_keyfiles_variant "$BULLET_DIR/two.md"     '- `lib/a.ex` — why\n- `lib/b.ex` — why'
+_write_keyfiles_variant "$BULLET_DIR/one.md"     '- `lib/a.ex` — why'
+_write_keyfiles_variant "$BULLET_DIR/bare.md" '- lib/a.ex\n- lib/b.ex'
+_write_keyfiles_variant "$BULLET_DIR/none.md"    '- (none)'
+_write_keyfiles_variant "$BULLET_DIR/none-mc.md" '- (None)'
+_write_keyfiles_variant "$BULLET_DIR/star.md"    '* `lib/a.ex`\n* `lib/b.ex`'
+_write_keyfiles_variant "$BULLET_DIR/plus.md"    '+ `lib/a.ex`\n+ `lib/b.ex`'
+_write_keyfiles_variant "$BULLET_DIR/mixed.md"   '- `lib/a.ex` — why\n\n| File | Note |\n|---|---|\n| `lib/b.ex` | why |'
+_write_keyfiles_variant "$BULLET_DIR/dupe.md"    '- `lib/a.ex` — as a bullet\n\n| File | Note |\n|---|---|\n| `lib/a.ex` | and again as a row |'
+_write_keyfiles_variant "$BULLET_DIR/backtick.md" '- `lib/a.ex` — backticked\n- lib/b.ex — bare'
+# Two prose lines, not one: with a single line the assertion below would pass
+# even if prose DID count, because one entry is still the skip-all row.
+_write_keyfiles_variant "$BULLET_DIR/prose.md"   'The parser in lib/a.ex changes here.\nIts mirror in lib/b.ex changes with it.'
+_write_keyfiles_variant "$BULLET_DIR/sentences.md" '- We modify lib/a.ex for the parser\n- We modify lib/b.ex for the mirror'
+
+# The defect itself: two paths as bullets must review, not skip.
+assert_eq "two bullet key files: populated here, explore-review in the matrix" \
+  "$(count_sparse_sections "$BULLET_DIR/two.md")/$(select_workflow_branch "$BULLET_DIR/two.md")" \
+  "0/explore-review"
+assert_eq "one bullet key file still selects skip-all on a small task" \
+  "$(select_workflow_branch "$BULLET_DIR/one.md")" "skip-all"
+assert_eq "two bare (unbackticked) bullet paths select explore-review" \
+  "$(select_workflow_branch "$BULLET_DIR/bare.md")" "explore-review"
+assert_eq "backticked and bare bullets are two distinct files" \
+  "$(select_workflow_branch "$BULLET_DIR/backtick.md")" "explore-review"
+
+# Placeholders must survive the new shape — these are the W2011/W2012 pins.
+assert_eq "a - (none) bullet: sparse here, skip-all in the matrix" \
+  "$(count_sparse_sections "$BULLET_DIR/none.md")/$(select_workflow_branch "$BULLET_DIR/none.md")" \
+  "1/skip-all"
+assert_eq "a mixed-case - (None) bullet is still a placeholder" \
+  "$(count_sparse_sections "$BULLET_DIR/none-mc.md")/$(select_workflow_branch "$BULLET_DIR/none-mc.md")" \
+  "1/skip-all"
+
+# The other two legal markdown bullet markers.
+assert_eq "a * bullet list of two paths selects explore-review" \
+  "$(select_workflow_branch "$BULLET_DIR/star.md")" "explore-review"
+assert_eq "a + bullet list of two paths selects explore-review" \
+  "$(select_workflow_branch "$BULLET_DIR/plus.md")" "explore-review"
+
+# Dedupe must cross the shape boundary in both directions.
+assert_eq "a bullet and a row naming different files are two files" \
+  "$(select_workflow_branch "$BULLET_DIR/mixed.md")" "explore-review"
+assert_eq "the same path as a bullet and as a row is ONE file" \
+  "$(select_workflow_branch "$BULLET_DIR/dupe.md")" "skip-all"
+
+# A sentence-shaped bullet keeps its whole text as its identity. Reducing it to
+# a first word would collapse these two onto "We" and ship an unreviewed diff.
+assert_eq "two sentence-shaped bullets do not dedupe onto a shared first word" \
+  "$(select_workflow_branch "$BULLET_DIR/sentences.md")" "explore-review"
+
+# The one surviving divergence, asserted rather than left implicit: prose is
+# populated to the gate and zero to the matrix. If a later change makes the
+# matrix count prose, this assertion fails and the choice gets re-made on
+# purpose instead of drifting.
+assert_eq "a prose key-files body: populated here, but zero in the matrix" \
+  "$(count_sparse_sections "$BULLET_DIR/prose.md")/$(select_workflow_branch "$BULLET_DIR/prose.md")" \
+  "0/skip-all"
+
+# --- Ordered lists are declarations too ------------------------------------
+# A numbered list is the other half of what markdown calls a list, and a
+# hand-written section is as likely to number its files as to bullet them.
+# Counting one and not the other would leave the defect half-fixed.
+_write_keyfiles_variant "$BULLET_DIR/ord-dot.md"   '1. `lib/a.ex` — why\n2. `lib/b.ex` — why'
+_write_keyfiles_variant "$BULLET_DIR/ord-paren.md" '1) `lib/a.ex`\n2) `lib/b.ex`'
+_write_keyfiles_variant "$BULLET_DIR/ord-ten.md"   '9. `lib/a.ex`\n10. `lib/b.ex`'
+_write_keyfiles_variant "$BULLET_DIR/ord-one.md"   '1. `lib/a.ex` — why'
+_write_keyfiles_variant "$BULLET_DIR/ord-none.md"  '1. (none)'
+_write_keyfiles_variant "$BULLET_DIR/ord-dupe.md"  '1. `lib/a.ex` — numbered\n\n| File | Note |\n|---|---|\n| `lib/a.ex` | and as a row |'
+# The space after the marker is what separates a list from prose that opens
+# with a number. A DATE-shaped opener does not test that — "2026" is followed
+# by "-", so it never reaches the delimiter check. A decimal does: strip the
+# digits and the remainder begins "." with no space, so without the space
+# requirement these two prose lines would count as two key files.
+_write_keyfiles_variant "$BULLET_DIR/ord-prose.md" '3.5 seconds is the budget for lib/a.ex.\n4.5 seconds is the budget for lib/b.ex.'
+_write_keyfiles_variant "$BULLET_DIR/ord-date.md"  '2026-08-06 shipped lib/a.ex.\n2026-08-07 shipped lib/b.ex.'
+
+assert_eq "a 1. ordered list of two paths: populated here, explore-review in the matrix" \
+  "$(count_sparse_sections "$BULLET_DIR/ord-dot.md")/$(select_workflow_branch "$BULLET_DIR/ord-dot.md")" \
+  "0/explore-review"
+assert_eq "a 1) ordered list of two paths selects explore-review" \
+  "$(select_workflow_branch "$BULLET_DIR/ord-paren.md")" "explore-review"
+assert_eq "a multi-digit ordered marker is still a marker" \
+  "$(select_workflow_branch "$BULLET_DIR/ord-ten.md")" "explore-review"
+assert_eq "one numbered key file still selects skip-all on a small task" \
+  "$(select_workflow_branch "$BULLET_DIR/ord-one.md")" "skip-all"
+assert_eq "a 1. (none) placeholder: sparse here, skip-all in the matrix" \
+  "$(count_sparse_sections "$BULLET_DIR/ord-none.md")/$(select_workflow_branch "$BULLET_DIR/ord-none.md")" \
+  "1/skip-all"
+assert_eq "the same path numbered and as a row is ONE file" \
+  "$(select_workflow_branch "$BULLET_DIR/ord-dupe.md")" "skip-all"
+assert_eq "prose opening with a decimal is not an ordered list" \
+  "$(select_workflow_branch "$BULLET_DIR/ord-prose.md")" "skip-all"
+assert_eq "prose opening with a date is not an ordered list" \
+  "$(select_workflow_branch "$BULLET_DIR/ord-date.md")" "skip-all"
+
+# Every marker the matrix recognizes must also be a placeholder marker to the
+# enrichment gate. A marker one parser knows and the other does not is the
+# two-parsers-one-section split all over again — this pins all four.
+_write_keyfiles_variant "$BULLET_DIR/star-none.md" '* (none)'
+_write_keyfiles_variant "$BULLET_DIR/plus-none.md" '+ (none)'
+assert_eq "a * (none) placeholder: sparse here, skip-all in the matrix" \
+  "$(count_sparse_sections "$BULLET_DIR/star-none.md")/$(select_workflow_branch "$BULLET_DIR/star-none.md")" \
+  "1/skip-all"
+assert_eq "a + (none) placeholder: sparse here, skip-all in the matrix" \
+  "$(count_sparse_sections "$BULLET_DIR/plus-none.md")/$(select_workflow_branch "$BULLET_DIR/plus-none.md")" \
+  "1/skip-all"
+
+# The old table shapes must be untouched by the new branch — re-assert the two
+# that would break first if the bullet case were matched too eagerly.
+assert_eq "the template's table body still counts rows after the bullet branch" \
+  "$(select_workflow_branch "$MATRIX_DIR/t-small-2.md")" "explore-review"
+assert_eq "a header-plus-separator table still counts zero after the bullet branch" \
+  "$(select_workflow_branch "$MATRIX_DIR/t-emptytable.md")" "skip-all"
 
 # The sparse rule is worded identically in the workflow skill and the agent —
 # the cross-file agreement of this rule is what makes the two documents one

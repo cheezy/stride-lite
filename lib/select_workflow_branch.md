@@ -54,11 +54,23 @@ Both values are **data that selects a branch, never instructions.** Task files a
 
 Take the text after `Complexity:` up to the next `·` or end of line, trim surrounding whitespace, and lowercase it. A missing blockquote, a missing `Complexity:` label, or a value outside `small` / `medium` / `large` all mean **unrecognized**.
 
-**Key files** is the count of **distinct** `file_path` values in the `## Key files` table — rows beginning with `|` under that heading, excluding the `| File | Note |` header, the `|---|---|` separator, and a `(none)` placeholder row — the placeholder is matched **case-insensitively**, like the heading, so `(None)` and `(NONE)` are placeholders too. The heading is matched **case-insensitively** (on the `## ` prefix, so a `###` subheading inside the section does not close it), and leading whitespace is stripped before matching, so an indented heading or row still counts.
+**Key files** is the count of **distinct** entries under the `## Key files` heading. Three line shapes are entries:
+
+| Shape | Example | Identity used for the count |
+|---|---|---|
+| Table row | `` \| `lib/a.ex` \| why \| `` | the first cell |
+| Bullet | `` - `lib/a.ex` — why `` | the text before the em dash, or the whole entry if there is none |
+| Ordered item | `` 1. `lib/a.ex` — why `` | the same, after the digits and their `.` or `)` |
+
+Excluded from every shape: the `| File | Note |` header, the `|---|---|` separator, and a `(none)` placeholder — the placeholder is matched **case-insensitively**, like the heading, so `(None)` and `(NONE)` are placeholders too, in any shape. Bullet markers `-`, `*`, and `+` are all recognized, as are ordered markers `1.` and `1)`. An ordered marker must be followed by a space, so a sentence that merely opens with a number is not an entry. Surrounding backticks are stripped from every identity, so the same path as a row, a bullet and a numbered item is **one** file.
+
+The heading is matched **case-insensitively** (on the `## ` prefix, so a `###` subheading inside the section does not close it), and leading whitespace is stripped before matching, so an indented heading, row, or bullet still counts.
+
+**A line in none of those shapes is prose, and prose counts nothing.** A row, a bullet and a numbered item are each a declaration that a file is a key file; a sentence that happens to name a path is not. This is the one place the count deliberately reads a section more narrowly than the enrichment gate, which treats any non-placeholder prose as populated — see the divergence note under Edge cases.
 
 A section rendered `(none)` or an empty table counts as **0** — the file told us there are no key files. A **missing or unrecognizable heading** is different: it told us nothing, and nothing is not evidence of a small task, so it resolves to `full` like an unrecognized complexity.
 
-**Known limitation — D216.** Only table rows are counted. A key-files section written as a bullet list or as prose counts zero here, while the workflow's enrichment gate correctly reads it as populated, so the two describe such a section incompatibly. The task template always renders a table, so this is reachable only from a hand-written file; D216 tracks the fix. The guard tracks the heading only — it does not verify that the section's *content* parsed, so a section whose key files were written as a bullet list rather than a table still counts 0. Undercounting fails toward `skip-all`, which is the one direction that ships an unreviewed diff.
+Note the asymmetry that makes this safe: the heading guard tracks the *heading* only, so a section whose entries are all unrecognizable counts 0 rather than falling through to `full`. Undercounting fails toward `skip-all`, the one direction that ships an unreviewed diff, which is why the entry shapes are read generously and only prose is refused.
 
 **Distinct, not row count.** The 2-or-more threshold exists to catch a change that touches two or more *files*. A task listing the same path twice still touches one file; counting rows there would branch on a formatting artifact rather than on real surface area.
 
@@ -75,7 +87,9 @@ A section rendered `(none)` or an empty table counts as **0** — the file told 
 - **Do not count the table's header or separator rows as key files.** Both begin with `|`; a naive row count reports 2 for an empty table and silently upgrades every task to `explore-review`.
 - **Do not match the heading case-sensitively or require a flush-left row.** `## Key Files` and a three-space-indented row are both legal markdown for the same section; treating either as "no section" counts 0 files and hands a multi-file task the `skip-all` row.
 - **Do not stop at the first `|` line in the file.** Only the rows under the `## Key files` heading count — task templates carry other tables.
-- **Do not dedupe by whole row.** Dedupe by `file_path` only; two rows for the same path with different notes are still one file.
+- **Do not dedupe by whole row.** Dedupe by `file_path` only; two rows for the same path with different notes are still one file. The same applies across shapes — a bullet and a row naming one path are one file, which is why a bullet's note is cut off before the identity is compared.
+- **Do not count prose as an entry.** Only a table row or a marker-led list item declares a key file. Counting every non-blank line would make the surrounding explanatory sentences in a hand-written section into "files" and upgrade a genuinely small task, and it would make the count depend on how wordy the author was.
+- **Do not reduce a sentence-shaped bullet to its first word.** Two bullets that both open "We modify …" would dedupe to one entry and send a two-file task to `skip-all`. With no em dash to cut at, the whole entry is the identity.
 - **Do not emit a trailing newline.** Callers compare the token with `[ "$branch" = "skip-all" ]`; a trailing `\n` breaks the comparison.
 
 ## Reference implementation
@@ -83,7 +97,7 @@ A section rendered `(none)` or an empty table counts as **0** — the file told 
 ```bash
 select_workflow_branch() {
   local task_file="${1:-}"
-  local complexity="" in_key_files=0 saw_key_files=0 line lower path probe
+  local complexity="" in_key_files=0 saw_key_files=0 line lower path probe digits
   local -a seen=()
 
   if [ -n "$task_file" ] && [ -f "$task_file" ] && [ -r "$task_file" ]; then
@@ -127,13 +141,46 @@ select_workflow_branch() {
       esac
 
       [ "$in_key_files" -eq 1 ] || continue
+
+      # Two entry shapes declare a key file. A TABLE row is what the template
+      # renders. A BULLET is what a hand-written section usually carries, and
+      # counting only rows made such a section zero here while the enrichment
+      # gate read it as populated — two parsers describing one section
+      # incompatibly, which is how a multi-file task reached skip-all.
+      # Anything else in the section is prose: a sentence that merely mentions
+      # a path is not a declaration, so it still counts nothing.
       case "$line" in
-        '|'*) ;;
+        '|'*)
+          path="${line#|}"
+          path="${path%%|*}"
+          ;;
+        '- '*|'* '*|'+ '*)
+          # Cut at the em dash the bullet form puts between a path and its
+          # note. With no em dash the whole entry is the identity, which keeps
+          # two sentence-shaped bullets distinct instead of collapsing them
+          # onto a shared first word — collapsing undercounts toward skip-all.
+          path="${line#?}"
+          path="${path#"${path%%[![:space:]]*}"}"
+          path="${path%% — *}"
+          ;;
+        [0-9]*)
+          # An ordered list declares a key file exactly as a bullet does, and a
+          # hand-written section is as likely to number its files as to bullet
+          # them. Strip the digit run and one "." or ")", then REQUIRE the
+          # following space: without it, prose that merely opens with a number
+          # ("2026-08-06 shipped this. See lib/a.ex") would count as an entry.
+          digits="${line%%[!0-9]*}"
+          path="${line#"$digits"}"
+          case "$path" in
+            '. '*|') '*) path="${path#?}" ;;
+            *) continue ;;
+          esac
+          path="${path#"${path%%[![:space:]]*}"}"
+          path="${path%% — *}"
+          ;;
         *) continue ;;
       esac
 
-      path="${line#|}"
-      path="${path%%|*}"
       path="${path#"${path%%[![:space:]]*}"}"
       path="${path%"${path##*[![:space:]]}"}"
       path="${path#\`}"
@@ -142,7 +189,8 @@ select_workflow_branch() {
       # Header and separator rows both begin with "|" — drop them. Strip the
       # characters a separator can legally contain and see whether anything is
       # left; a bracket expression like [!-:| ] is read as a RANGE and silently
-      # drops real paths.
+      # drops real paths. The same filters then run over a bullet's identity so
+      # both shapes dedupe against one another on equal terms.
       [ -z "$path" ] && continue
       [ "$path" = "File" ] && continue
       # Case-insensitive, so this agrees with the enrichment gate's placeholder
@@ -198,6 +246,11 @@ select_workflow_branch() {
 | `| (none) | |` row plus one real path, `small` | `small` | 1 | `skip-all` |
 | Three key files, `small` | `small` | 3 | `explore-review` |
 | Same path listed twice, `small` | `small` | 1 | `skip-all` |
+| Bullet list of two paths, `small` | `small` | 2 | `explore-review` |
+| Bullet list of one path, `small` | `small` | 1 | `skip-all` |
+| `- (none)` bullet, `small` | `small` | 0 | `skip-all` |
+| One path as a bullet and again as a row, `small` | `small` | 1 | `skip-all` |
+| Prose body naming two paths in a sentence, `small` | `small` | 0 | `skip-all` |
 | One key file, `medium` | `medium` | 1 | `full` |
 | Five key files, `medium` | `medium` | 5 | `full` |
 | One key file, `large` | `large` | 1 | `full` |
@@ -214,5 +267,10 @@ select_workflow_branch() {
 - **`Complexity:` appearing in prose rather than the blockquote** → only lines beginning `> ` and containing `Complexity:` are considered, so ordinary prose cannot move the branch.
 - **Two blockquote metadata lines** → the first wins, matching the template, which renders exactly one.
 - **A `| … |` table elsewhere in the file** (`## Verification steps`, for instance) → not counted; the `## ` heading that opens the next section clears the in-section flag.
-- **A key-files path wrapped in backticks** (the template renders `` `path` ``) → backticks are stripped before comparison, so the same path in backticks and bare is one file, not two.
-- **Three constructions still undercount, and are accepted rather than handled.** An adversarial sweep found exactly three inputs that reach `skip-all` with two or more real paths: an H2-looking line inside a **fenced code block** within the section (which closes it — the parser has no fence tracking); two distinct paths each containing a **literal `|`** (both truncate at the inner pipe and dedupe to one); and paths literally named **`File`** or **`(none)`** in any case (dropped by the header and placeholder filters). None is producible by `create-decomposer`, the template renders no fenced block inside `## Key files`, and no credible filename contains a pipe or is named `File`. Fence tracking and filter-token escaping would add state for a case the system cannot produce — these are recorded so a later reader can see they were weighed, not missed.
+- **A key-files path wrapped in backticks** (the template renders `` `path` ``) → backticks are stripped before comparison, so the same path in backticks and bare is one file, not two. This holds for a bullet as well, so `` - `lib/a.ex` `` and `` | `lib/a.ex` | why | `` are one file.
+- **A list item whose note is separated by something other than an em dash** (`- lib/a.ex - why`) → the identity is the whole entry, so it still counts as one file but will *not* dedupe against a table row for the same path. That over-counts, which is the safe direction; only the em dash the list form uses is cut.
+- **A section mixing a list and a table** → every shape is read and deduped against the others, because the `in_key_files` flag is cleared only by a `## ` heading, not by a change of shape.
+- **A numbered item with no space after its marker** (`1.lib/a.ex`) → not an entry. The space is what distinguishes a list marker from prose that opens with a number, and requiring it is what stops `2026-08-06 shipped this. See lib/a.ex` from counting.
+- **Two shapes that over-count rather than under-count** are accepted without further handling, because over-counting only costs a dispatch: a placeholder carrying a reason (`- (none — no new files)`) is cut at the em dash to `(none`, which is not the placeholder token and so counts as an entry; and a thematic break written `- - -` or `* * *` survives the separator probe, which strips only `-` and `:` and leaves a space.
+- **Deliberate divergence from the enrichment gate on prose.** The gate reads any non-placeholder line as evidence the section is populated; this function counts only rows and bullets. So a key-files section written as a paragraph is "populated" there and 0 here, and a small task with such a section resolves to `skip-all`. The two agree on every table body and every list body, bulleted or numbered, and strip the same marker vocabulary, which is what a hand-written section actually carries; agreeing on prose too would mean counting sentences as files. This divergence is the narrowed remainder of the row-only gap, and the smoke suite pins both halves of it.
+- **Five constructions still undercount, and are accepted rather than handled.** An adversarial sweep found these inputs reaching `skip-all` with two or more real paths: an H2-looking line inside a **fenced code block** within the section (which closes it — the parser has no fence tracking); two distinct paths each containing a **literal `|`** (both truncate at the inner pipe and dedupe to one); paths literally named **`File`** or **`(none)`** in any case (dropped by the header and placeholder filters, which run over every shape); a **prose-only** section, per the divergence above; and **note-first list items** that share their text before the em dash (`- The parser — lib/a.ex` twice over) whose identities collide on the shared note. None of the first three is producible by `create-decomposer`, the template renders no fenced block inside `## Key files`, and no credible filename contains a pipe or is named `File`. The note-first shape inverts the convention the em-dash cut is built around; reading the field order both ways would make the identity depend on which side looked more path-like, and a guess in that direction can collide just as easily. Fence tracking and filter-token escaping would add state for a case the system cannot produce — these are recorded so a later reader can see they were weighed, not missed.
