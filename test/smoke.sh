@@ -3926,6 +3926,264 @@ done
 assert_eq "every exported key is documented in the workflow SKILL.md" "$ENV_UNDOCUMENTED" ""
 
 # ------------------------------------------------------------------
+# Fence pairing across every shipped markdown file (D217)
+# ------------------------------------------------------------------
+# A COUNT of fence lines proves nothing. agents/task-reviewer.md carried six
+# fence lines that balanced numerically while pairing WRONGLY: a ```json block
+# inside a ```markdown wrapper closes the wrapper, because CommonMark forbids
+# an info string on a CLOSING fence, so the inner block's terminator is a legal
+# closer for the outer one. The rest of the file then renders as sample code.
+# This walks fences the way a renderer does instead of counting them: an opener
+# may carry an info string; a closer may not, and must be at least as long as
+# the opener it closes.
+#
+# Two defects, not one. Counting fences catches neither, and so does merely
+# walking for an UNCLOSED fence: reverting task-reviewer.md's wrapper to three
+# backticks leaves the file perfectly balanced -- the inner json block's closer
+# ends the wrapper, the next line opens a fresh anonymous block, and that one
+# closes at the end. Balanced, and wrong. So this reports:
+#
+#   nested:N   -- line N is a fence of the SAME width as the block it sits in
+#                 and carries an info string. It reads as an inner opener, so
+#                 its closer will terminate the OUTER block instead. This is
+#                 D217 exactly, and it is the one a balance check cannot see.
+#                 A nested fence is legitimate only when the outer is wider.
+#   unclosed:N -- line N opened a fence that end-of-file never closed.
+#
+# Returns the first defect found, or nothing. Never fails: an unreadable file
+# simply reports nothing.
+fence_defect() {
+  local file="$1" line stripped rest run fchar
+  local open=0 open_len=0 open_line=0 open_char="" lineno=0
+  [ -r "$file" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    lineno=$((lineno + 1))
+    # Leading whitespace is legal on a fence -- up to three spaces at top level,
+    # and more inside a list item. Strip it all rather than guess the nesting.
+    # The cost is that a fence indented four spaces INSIDE an indented code
+    # block reads as a fence here when a renderer would call it literal text.
+    # That direction over-reports, which is the safe one for a guard.
+    stripped="${line#"${line%%[![:space:]]*}"}"
+    # Backticks and tildes are both fences and CommonMark treats them alike,
+    # except that a tilde fence's info string MAY contain backticks. A closer
+    # must use the same character as its opener, so ``` never closes ~~~.
+    case "$stripped" in
+      '```'*) fchar='`' ;;
+      '~~~'*) fchar='~' ;;
+      *) continue ;;
+    esac
+    # Measure the run: a four-character fence is not closed by three.
+    rest="$stripped"
+    run=0
+    while [ "${rest#"$fchar"}" != "$rest" ]; do
+      rest="${rest#"$fchar"}"
+      run=$((run + 1))
+    done
+    if [ "$open" -eq 0 ]; then
+      # A BACKTICK opener's info string may not itself contain a backtick.
+      if [ "$fchar" = '`' ]; then
+        case "$rest" in
+          *'`'*) continue ;;
+        esac
+      fi
+      open=1
+      open_len="$run"
+      open_line="$lineno"
+      open_char="$fchar"
+    elif [ "$fchar" = "$open_char" ]; then
+      rest="${rest#"${rest%%[![:space:]]*}"}"
+      if [ -z "$rest" ] && [ "$run" -ge "$open_len" ]; then
+        open=0
+        open_len=0
+        open_line=0
+        open_char=""
+      elif [ -n "$rest" ] && [ "$run" -eq "$open_len" ]; then
+        # Same character, same width, carrying an info string, inside an open
+        # block. This OVER-approximates: the line may be an inner opener whose
+        # closer will end the outer block (the D217 defect), or it may be
+        # literal text that happens to look like one. The two are structurally
+        # identical, so no walk can tell them apart -- and the remedy is the
+        # same either way, because showing a fence opener literally also
+        # requires widening the fence around it. Reporting both is correct.
+        printf 'nested:%s' "$lineno"
+        return 0
+      fi
+    fi
+  done < "$file"
+  [ "$open" -eq 1 ] && printf 'unclosed:%s' "$open_line"
+  return 0
+}
+
+# Positive controls FIRST. Without them a helper that detected nothing would
+# make every "pairs cleanly" assertion below pass for the wrong reason -- which
+# is the same shape of mistake as counting fences and calling it pairing.
+FENCE_DIR="$SANDBOX/fences"
+mkdir -p "$FENCE_DIR"
+printf '# T\n\n```markdown\n## Shape\n\n```json\n{"a":1}\n```\n\n```\n\n## After\n\nprose\n' \
+  > "$FENCE_DIR/broken.md"
+assert_eq "the fence walker reports the D217 nesting, which stays balanced" \
+  "$(fence_defect "$FENCE_DIR/broken.md")" "nested:6"
+
+printf '# T\n\n````markdown\n## Shape\n\n```json\n{"a":1}\n```\n\n````\n\n## After\n\nprose\n' \
+  > "$FENCE_DIR/fixed.md"
+assert_eq "the same file with a four-backtick wrapper pairs cleanly" \
+  "$(fence_defect "$FENCE_DIR/fixed.md")" ""
+
+# The broken fixture is BALANCED -- two openers, two closers. (agents/task-reviewer.md
+# balanced at three pairs; this fixture is the same shape, smaller.) That is why a
+# count, and even an unclosed-fence walk, both report it clean.
+assert_eq "the broken fixture has an even number of fence lines" \
+  "$(( $(grep -c '^`\{3,\}' "$FENCE_DIR/broken.md") % 2 ))" "0"
+
+# What the defect actually costs a reader: headings swallowed by a code block.
+# Print every "## " heading that a renderer would show as a heading.
+# The same walk as fence_defect, in awk. Two implementations of one rule is
+# the shape D216 just fixed, so they must agree: same fence characters, same
+# backtick-in-info-string rejection, same CR handling. The suite asserts they
+# agree on every shipped file rather than trusting that they do.
+headings_outside_fences() {
+  awk '
+    {
+      line = $0
+      sub(/\r$/, "", line)
+      sub(/^[ \t]+/, "", line)
+      fc = ""
+      if (line ~ /^```/) fc = "`"
+      else if (line ~ /^~~~/) fc = "~"
+      if (fc != "") {
+        run = 0; t = line
+        while (substr(t, 1, 1) == fc) { run++; t = substr(t, 2) }
+        if (!open) {
+          if (fc != "`" || index(t, "`") == 0) { open = 1; len = run; oc = fc }
+          next
+        }
+        gsub(/^[ \t]+|[ \t]+$/, "", t)
+        if (t == "" && run >= len && fc == oc) { open = 0 }
+        next
+      }
+      if (!open && line ~ /^## /) print line
+    }
+  ' "$1"
+}
+
+FENCE_BROKEN_H="$FENCE_DIR/broken-headings.txt"
+FENCE_FIXED_H="$FENCE_DIR/fixed-headings.txt"
+headings_outside_fences "$FENCE_DIR/broken.md" > "$FENCE_BROKEN_H"
+headings_outside_fences "$FENCE_DIR/fixed.md"  > "$FENCE_FIXED_H"
+assert_has "with a four-backtick wrapper the trailing heading still renders" \
+  "$FENCE_FIXED_H" "## After"
+# The same heading must NOT survive the three-backtick version, or the pair
+# above proves nothing about what the fence width buys.
+if grep -qF "## After" "$FENCE_BROKEN_H"; then
+  nope "the three-backtick version swallows the trailing heading" \
+    "no headings outside the fence" "$(cat "$FENCE_BROKEN_H")"
+else
+  ok "the three-backtick version swallows the trailing heading"
+fi
+
+# The shipped file, stated as the acceptance criterion states it.
+XT_RV_H="$FENCE_DIR/reviewer-headings.txt"
+headings_outside_fences "$REPO_ROOT/agents/task-reviewer.md" > "$XT_RV_H"
+assert_has "the Append-or-replace strategy heading renders as a heading" \
+  "$XT_RV_H" "## Append-or-replace strategy"
+assert_has "the Pitfalls heading renders as a heading" "$XT_RV_H" "## Pitfalls"
+# And the template's own sample heading must stay inside the fence, or the two
+# assertions above would pass on a file with no working fences at all.
+if grep -qF "## Review Report" "$XT_RV_H"; then
+  nope "the report template's sample heading stays inside the fence" \
+    "## Review Report not rendered as a heading" "it renders as one"
+else
+  ok "the report template's sample heading stays inside the fence"
+fi
+
+# The edge cases a naive line-anchored check gets wrong.
+printf '# T\n\n- item:\n\n  ```bash\n  echo hi\n  ```\n\n## After\n' > "$FENCE_DIR/indented.md"
+assert_eq "an indented fence inside a list item still pairs" \
+  "$(fence_defect "$FENCE_DIR/indented.md")" ""
+printf '# T\n\n```\nplain\n```\n\n## After\n' > "$FENCE_DIR/plain.md"
+assert_eq "a file whose only fences are top-level pairs" \
+  "$(fence_defect "$FENCE_DIR/plain.md")" ""
+printf '# T\n\n```{.foo bar=baz}\nx\n```\n\n## After\n' > "$FENCE_DIR/infostring.md"
+assert_eq "an info string that is not a language name still opens a fence" \
+  "$(fence_defect "$FENCE_DIR/infostring.md")" ""
+printf '# T\n\n```text\nnot closed\n' > "$FENCE_DIR/unterminated.md"
+assert_eq "a genuinely unterminated fence is reported" \
+  "$(fence_defect "$FENCE_DIR/unterminated.md")" "unclosed:3"
+
+# Tildes are fences too, and the same defect written with them must not slip
+# through -- "cannot recur silently" has to mean in either syntax.
+printf '# T\n\n~~~markdown\n## Shape\n\n~~~json\n{}\n~~~\n\n~~~\n\n## After\n' \
+  > "$FENCE_DIR/tilde-broken.md"
+assert_eq "the D217 shape written with tildes is caught too" \
+  "$(fence_defect "$FENCE_DIR/tilde-broken.md")" "nested:6"
+printf '# T\n\n~~~~markdown\n## Shape\n\n~~~json\n{}\n~~~\n\n~~~~\n\n## After\n' \
+  > "$FENCE_DIR/tilde-fixed.md"
+assert_eq "a wider tilde wrapper pairs cleanly" \
+  "$(fence_defect "$FENCE_DIR/tilde-fixed.md")" ""
+# A closer must match its opener's CHARACTER, not just its width: three
+# backticks inside a tilde block are literal content, not a terminator.
+printf '# T\n\n~~~text\n```\n~~~\n\n## After\n' > "$FENCE_DIR/tilde-mixed.md"
+assert_eq "backticks inside a tilde fence do not close it" \
+  "$(fence_defect "$FENCE_DIR/tilde-mixed.md")" ""
+# And a tilde info string MAY carry a backtick, unlike a backtick fence's.
+printf '# T\n\n~~~`weird`\nx\n~~~\n\n## After\n' > "$FENCE_DIR/tilde-info.md"
+assert_eq "a tilde info string may contain a backtick" \
+  "$(fence_defect "$FENCE_DIR/tilde-info.md")" ""
+
+# The two walkers are one rule written twice, which is the shape D216 fixed.
+# Pin them on the two constructs where they could plausibly drift apart, rather
+# than assuming alignment: a backtick inside a would-be opener's info string
+# (which makes it NOT an opener), and CRLF line endings (this plugin ships a
+# PowerShell mirror, so Windows contributors are in scope).
+printf '# T\n\n```foo`bar\nx\n\n## After\n' > "$FENCE_DIR/badinfo.md"
+assert_eq "a backtick in the info string means no fence opened" \
+  "$(fence_defect "$FENCE_DIR/badinfo.md")" ""
+assert_eq "...and the awk walker agrees, still rendering the heading" \
+  "$(headings_outside_fences "$FENCE_DIR/badinfo.md")" "## After"
+
+printf '# T\r\n\r\n```text\r\nx\r\n```\r\n\r\n## After\r\n' > "$FENCE_DIR/crlf.md"
+assert_eq "a CRLF file closes its fence" \
+  "$(fence_defect "$FENCE_DIR/crlf.md")" ""
+assert_eq "...and the awk walker agrees, still rendering the heading" \
+  "$(headings_outside_fences "$FENCE_DIR/crlf.md")" "## After"
+
+# The sweep itself.
+FENCE_BAD=""
+FENCE_N=0
+for _f in "$REPO_ROOT"/agents/*.md "$REPO_ROOT"/skills/*/*.md; do
+  [ -f "$_f" ] || continue
+  FENCE_N=$((FENCE_N + 1))
+  _u="$(fence_defect "$_f")"
+  [ -n "$_u" ] && FENCE_BAD="$FENCE_BAD ${_f#"$REPO_ROOT/"}:$_u"
+done
+# Guard the glob: an unmatched pattern would sweep nothing and report every
+# file clean. The repo ships five agents and four skills.
+assert_eq "the fence sweep covered every shipped agent and skill file" \
+  "$FENCE_N" "9"
+assert_eq "every shipped agent and skill markdown file pairs its fences" \
+  "$FENCE_BAD" ""
+
+# The same walk over every other markdown file the repo TRACKS -- a superset of
+# what install.sh ships, since fixtures/ is tracked but not installed. agents/
+# and skills/ are
+# where the defect was found and are pinned exactly above; this is the wider
+# net, because the reference implementations in lib/ and the commands carry
+# fenced blocks too, and a misparse there costs a reader the same way.
+FENCE_WIDE_BAD=""
+FENCE_WIDE_N=0
+for _f in "$REPO_ROOT"/*.md "$REPO_ROOT"/lib/*.md "$REPO_ROOT"/commands/*.md \
+          "$REPO_ROOT"/fixtures/*.md "$REPO_ROOT"/fixtures/expected-output/*.md; do
+  [ -f "$_f" ] || continue
+  FENCE_WIDE_N=$((FENCE_WIDE_N + 1))
+  _u="$(fence_defect "$_f")"
+  [ -n "$_u" ] && FENCE_WIDE_BAD="$FENCE_WIDE_BAD ${_f#"$REPO_ROOT/"}:$_u"
+done
+assert_eq "the wider fence sweep covered every remaining markdown file" \
+  "$FENCE_WIDE_N" "15"
+assert_eq "every other shipped markdown file pairs its fences too" \
+  "$FENCE_WIDE_BAD" ""
+
+# ------------------------------------------------------------------
 # Summary
 # ------------------------------------------------------------------
 
