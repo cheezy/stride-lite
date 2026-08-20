@@ -2,6 +2,28 @@
 
 All notable changes to **Stride Lite** are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added — the decision matrix now states its own authority and its own reading rule (W2113)
+
+`lib/select_workflow_branch.md` held the matrix and a one-line instruction to take the first matching row, and said nothing about what that instruction is worth or about what else in the tree is allowed to decide a dispatch. Two rules from the fleet port canon now sit directly under the table.
+
+The first fixes this file as the only place explore, plan and review are gated. The six-column restatement under Step 3 of the workflow skill, the quick reference card and every other mention of those steps describe an outcome rather than originate one — the arrangement the workflow skill had already asserted from its side, and that this file had never asserted from its own.
+
+The second says what the reading order actually buys here, and it opens with the precondition that has to come first: a task whose `## Key files` heading is missing or unrecognizable resolves to `full` without reaching the table at all, so a reader who skipped to the rows would match on complexity alone and land on `skip-all`. For the inputs that do reach it the rows accept disjoint values, so the first match is the only match and the scan order arbitrates nothing; the order still matters in exactly two places, for reading the `small` pair as a threshold in one direction and for keeping the unrecognised-complexity row at the foot. The full plugin's row precedence is not imported, because the rows it orders — a decompose row and a defect row — do not exist in this matrix.
+
+Documentation only. No row was added, removed or reworded, and the reference implementation is byte-for-byte what it was.
+
+### Deferred — the fleet `reason_code` vocabulary does not apply to this port (W2113)
+
+The canon requires a closed six-value `reason_code` on a `workflow_steps` entry that was not dispatched. This plugin emits no `workflow_steps` object: its telemetry is a bare JSON array in a committed markdown file, with no completion endpoint behind it, so the rejection that makes the canonical set closed has nothing to run in — and four of the six values name conditions this loop cannot reach. Adopting them would publish a contract this runtime cannot honour, which is the objection the workflow skill already records against reusing stride's five-value skip enum, and would leave two vocabularies describing one skip.
+
+The deferral and its reasoning are written into `skills/stride-lite-workflow/SKILL.md` under "Recording a skipped step". No canon anchor was added for the rule, so the fleet drift check goes on reporting that one cell as missing for this port. That is the accurate state and the intended outcome, not an oversight: an anchor beside a deferral would claim a compliance this port does not have. The canon's own applicability row for this port carries no such qualification; correcting it is filed for the final sweep rather than done from here.
+
+### Added — canon anchors on the reviewer's failed-verdict rule (W2113)
+
+`agents/task-reviewer.md` gains the fleet anchor beside the failed-verdict `note` rule it has carried since the current release. The rule text is unchanged; the anchor is what lets the fleet drift check see that this port already has it.
+
 ## [0.13.0] — 2026-08-19
 
 ### Fixed — the failed-verdict `note` rule the server already enforces (D240)
