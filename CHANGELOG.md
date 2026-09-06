@@ -46,6 +46,14 @@ The top-level verdict rule added in this release originally defined `approved` a
 
 Three of the assertions covering the consumer-side security exclusion needled lead-in and tail fragments — none contained the word `security` or the `minor` conjunct — so deleting the exclusion from the branch condition left all three green. The Step 8 redaction assertion had the same defect, needling the bullet's subject phrase rather than text inside the clause. Both were established by mutation-testing rather than by reading, and both are now needled to the clause itself; every new assertion in this release was re-mutation-tested and fails when its clause is removed. This matters more here than it would elsewhere: these rules are prose in this port, so the suite is the only mechanical bound they have, and an assertion that cannot fail is not a bound.
 
+### Fixed — the ceiling could not evaluate its own security carve-out on the prose-fallback path (W2172)
+
+The reviewer's rendered `### Issues` bullet carries severity, `file:line` and a description — **no `category`**, which lives only in the fenced JSON block. So on a report resolved by the prose fallback, the ceiling's "a security finding is never merely recorded" carve-out had nothing to select on, and the record bullet's own instruction to list each finding by `severity`, `category` and `file:line` could not be complied with. The release scoped only the all-cosmetic branch out of that path and said nothing about the record disposition, so the natural reading left it applying — which made the guarantee that a `critical` or a security finding never reaches a Completion Summary unbacked on exactly the path with the least information.
+
+Reaching the ceiling with a prose-only report now takes the stop path. Recording is available only where the fields the carve-outs turn on are actually present.
+
+Found by an exploratory session against `stride-opencode-lite` and fixed in all three lite ports before any was released, since all three shipped the same rendering template and the same scoping sentence.
+
 ### Fixed — the non-conforming-approval path looped without incrementing (W2170)
 
 The check added above that refuses an approval carrying findings said "treat it as `changes_requested` and loop", but gave that instruction inline rather than routing into the branch that increments — so nothing bounded it. A reviewer persistently emitting `approved` alongside findings could loop indefinitely, re-running the whole implement-and-review cycle, with `review_iteration` never moving. The guard against a bad approval was the one path the ceiling did not bound. It now routes into the `changes_requested` branch and consumes a round like any other refusal, and the clause is pinned.

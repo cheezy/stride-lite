@@ -2309,6 +2309,12 @@ assert_has "an outstanding escalation takes the stop path" "$XT_SKILL" \
 # carve-outs above. Its own severity/category re-check is therefore the only
 # thing standing between a mis-flagged entry and a completed task. This is the
 # consumer-side half of a producer-side rule the port states is unverified.
+# The rendered issue bullet carries no `category`, so on the prose-fallback
+# path the security carve-out has nothing to select on and recording is
+# withheld -- the ceiling takes the stop path there instead.
+assert_has "the record disposition is withheld where category cannot be read" "$XT_SKILL" \
+    "record disposition is unavailable on that path too"
+
 assert_has "the all-cosmetic branch re-reads severity and category" "$XT_SKILL" \
     "do not take the flag's word for it"
 assert_has "the all-cosmetic branch voids on a non-minor or security entry" "$XT_SKILL" \
