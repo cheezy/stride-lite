@@ -2275,6 +2275,11 @@ assert_has "approved requires an empty issues array, minor included" "$XT_REVIEW
     '`issues[]` is **empty** — of every severity, `minor` included'
 assert_has "the workflow refuses an approval that carries findings" "$XT_SKILL" \
     "first confirm the report is conforming"
+# A non-conforming approval must consume a round like any other refusal; a path
+# that loops without incrementing is unbounded by the ceiling the clamp exists
+# to guarantee. Found in the copilot-lite port, which inherited this wording.
+assert_has "a non-conforming approval increments and is bounded by the ceiling" "$XT_SKILL" \
+    "Route it into the \`changes_requested\` branch below"
 
 # The ceiling. The default and the clamp are the substance of the ported rule;
 # a clamp stated only in the inputs table is a description, not a step, so the
