@@ -2219,9 +2219,11 @@ assert_eq "the verdict array documents its full entry shape" "$XT_RV_MISSING" ""
 assert_has "a single bad entry cannot leave the section passed" "$XT_RV_STRUCT" \
     "can never leave the section status at"
 # The nested array arrived at stride schema 1.5, so a block citing 1.1 could not
-# legitimately carry it. Pin the cited version to one that has the field.
-assert_eq "the reviewer cites a schema version that carries considerations[]" \
-  "$(grep -oE 'schema_version .[0-9]+\.[0-9]+.' "$XT_REVIEWER" | sort -u | grep -c '1\.6')" "1"
+# legitimately carry it. Pin the cited version to one that has the field. The pin
+# moved to 1.7 with W2170: stride bumped to 1.7 in W2129 to add the optional
+# `cosmetic` key on issues[], and this port now documents that key locally.
+assert_eq "the reviewer cites a schema version that carries considerations[] and cosmetic" \
+  "$(grep -oE 'schema_version .[0-9]+\.[0-9]+.' "$XT_REVIEWER" | sort -u | grep -c '1\.7')" "1"
 # The citation is written schema_version `"1.1"` -- backtick then quote -- so a
 # pattern expecting a single character between them can never match, and the
 # negative passed against the very defect it was written to catch.
@@ -2230,9 +2232,124 @@ assert_eq "the reviewer no longer cites the pre-considerations schema 1.1" \
 # Stronger: every citation in the file must resolve to the same version.
 assert_eq "every schema citation in the reviewer agrees" \
   "$(grep -oE 'schema_version [^0-9]*[0-9]+\.[0-9]+' "$XT_REVIEWER" | grep -oE '[0-9]+\.[0-9]+' | sort -u | tr '\n' ' ')" \
-  "1.6 "
+  "1.7 "
 assert_has "the reviewer has a security-considerations methodology step" "$XT_REVIEWER" \
     "**Security considerations.**"
+
+# ---------------------------------------------------------------------------
+# W2170: the two G417 rules ported into this port are prose-only -- there is no
+# submission step and no pin site, so these assertions ARE the port's only
+# mechanical bound on them. Each pins a clause whose silent deletion would
+# reintroduce a defect the port already reasoned about.
+# ---------------------------------------------------------------------------
+
+# The task's own security consideration: the cosmetic flag and the
+# security-category exclusion must never ship apart. Without this pin an edit
+# could delete the exclusion, leave the flag, and keep the suite green -- the
+# exact state the consideration calls worse than not porting at all.
+assert_has "the cosmetic flag is defined in the reviewer contract" "$XT_REVIEWER" \
+    "a disposition, not a fourth severity"
+assert_has "the cosmetic flag excludes the security category at any severity" "$XT_REVIEWER" \
+    'A `cosmetic: true` beside `category: "security"`, at any severity'
+assert_has "the cosmetic flag is refused above minor" "$XT_REVIEWER" \
+    "A security finding is never presentation, and nothing above"
+assert_has "the cosmetic flag refuses non-boolean values" "$XT_REVIEWER" \
+    "are not coerced"
+assert_eq "the cosmetic definition carries its canon anchor exactly once" \
+  "$(grep -c 'canon:cosmetic-finding-class v1' "$XT_REVIEWER")" "1"
+
+# The top-level verdict vocabulary the workflow branches on must be defined in
+# the contract that emits it. It was branched on 30+ times in the skill and
+# named zero times here; a citation into another repository is not checkable
+# from this one, and this port installs without that repository present.
+assert_has "the reviewer documents the top-level approved verdict" "$XT_REVIEWER" \
+    '`"approved"`'
+assert_has "the reviewer documents the top-level changes_requested verdict" "$XT_REVIEWER" \
+    '`"changes_requested"`'
+assert_has "the reviewer separates top-level status from section status" "$XT_REVIEWER" \
+    "None of those six is ever a legal top-level value"
+# approved is defined by an EMPTY issues[], not by "no critical and no important".
+# The weaker wording let a minor carrying category "security" ride an approval
+# into Step 8, past both the ceiling carve-outs and the all-cosmetic re-check.
+assert_has "approved requires an empty issues array, minor included" "$XT_REVIEWER" \
+    '`issues[]` is **empty** — of every severity, `minor` included'
+assert_has "the workflow refuses an approval that carries findings" "$XT_SKILL" \
+    "first confirm the report is conforming"
+
+# The ceiling. The default and the clamp are the substance of the ported rule;
+# a clamp stated only in the inputs table is a description, not a step, so the
+# performing sentence is pinned separately from the table cell.
+assert_has "the review ceiling default is two" "$XT_SKILL" \
+    "Two review rounds is the ceiling"
+assert_has "the clamp is performed by a step, not just described" "$XT_SKILL" \
+    "Apply the clamp first"
+assert_has "the clamp names the min it applies" "$XT_SKILL" \
+    "min(max_review_iterations, 2)"
+assert_eq "the ceiling carries its canon anchor exactly once" \
+  "$(grep -c 'canon:review-round-cap v1' "$XT_SKILL")" "1"
+
+# The four-way ceiling disposition. The critical carve-out MUST stay bounded --
+# an unbounded "one further round" re-applies to its own post-state and hands
+# back the ceiling the clamp exists to guarantee.
+assert_has "the ceiling records important and minor findings" "$XT_SKILL" \
+    "are recorded, not fixed"
+assert_has "the critical carve-out is bounded to one further round" "$XT_SKILL" \
+    "The exemption is spent once and does not renew"
+assert_has "a security finding is never merely recorded" "$XT_SKILL" \
+    'is never merely recorded, at any severity'
+assert_has "an outstanding escalation takes the stop path" "$XT_SKILL" \
+    "is never recorded-and-completed"
+
+# The all-cosmetic branch fires BEFORE the increment, so it never reaches the
+# carve-outs above. Its own severity/category re-check is therefore the only
+# thing standing between a mis-flagged entry and a completed task. This is the
+# consumer-side half of a producer-side rule the port states is unverified.
+assert_has "the all-cosmetic branch re-reads severity and category" "$XT_SKILL" \
+    "do not take the flag's word for it"
+assert_has "the all-cosmetic branch voids on a non-minor or security entry" "$XT_SKILL" \
+    'voids the branch outright however it is flagged'
+# Pin the exclusion CLAUSES themselves, not their neighbours. The three needles
+# above match lead-ins and tails; deleting the severity/category conjunct left
+# all of them green, so they did not bind the clause they were added for -- and
+# the consumer half is the one thing between a mis-flagged entry and a completed
+# task. Needle the condition and the void sentence directly.
+assert_has "the all-cosmetic condition names the minor/non-security conjunct" "$XT_SKILL" \
+    'is a `minor` whose `category` is not `"security"`'
+assert_has "the void sentence names the security category" "$XT_SKILL" \
+    'or whose `category` is `"security"`, voids the branch'
+assert_has "the all-cosmetic branch requires a real boolean" "$XT_SKILL" \
+    "is not coerced here either"
+assert_has "a security project check takes the stop path whatever its label" "$XT_SKILL" \
+    "whatever its \`category\` string reads"
+
+# Step 8 must never record a refusal as an approval -- this file is the port's
+# entire audit trail and there is no server holding a second copy.
+assert_has "Step 8 has a shape for a completed non-approval" "$XT_SKILL" \
+    "Review ran, did not approve"
+assert_has "Step 8 forbids writing approved for a refusal" "$XT_SKILL" \
+    "Never write \"approved\" for a review that refused"
+
+# The recorded-findings write instruction must carry the same redaction clause
+# its sibling bullets carry; it writes into a committed markdown file.
+# Pinned per-site rather than as a total: a whole-file count silently passes
+# when one site loses the clause and an unrelated one gains it.
+assert_has "the Step 7 recorded-findings rule carries the redaction clause" "$XT_SKILL" \
+    "never pasted. **Never copy a credential"
+assert_has "the Step 8 recorded-findings bullet carries the redaction clause" "$XT_SKILL" \
+    "restated in your own words. **Never copy a credential"
+
+# dispatch_count is recorded as not-applicable: prose grounds, and NO anchor.
+# An anchor on a narrowed canon cell reports as unexpected drift.
+assert_has "the dispatch_count non-adoption states its structural grounds" "$XT_SKILL" \
+    "it does not apply to this port, and here is the structural reason"
+# Scoped to the SHIPPED contract files. A repo-wide grep matches this very
+# assertion and can never return zero -- a check that cannot pass is not a check.
+assert_eq "no canon anchor is claimed for dispatch-count-telemetry" \
+  "$(cat "$REPO_ROOT"/agents/*.md "$REPO_ROOT"/skills/*/SKILL.md "$REPO_ROOT"/lib/*.md 2>/dev/null | grep -c 'canon:dispatch-count-telemetry')" "0"
+
+# The reason_code paragraph must not re-assert the canon row D302 corrected.
+assert_eq "the reason_code gap no longer calls the canon row wrong" \
+  "$(grep -c 'the thing that is actually wrong' "$XT_SKILL")" "0"
 # The reviewer's placeholder rule must not be a SHORTER restatement of the
 # workflow's -- two parsers of one section that disagree describe it
 # incompatibly, and the disagreement surfaces as a `critical` verdict against a
