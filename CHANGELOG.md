@@ -2,13 +2,15 @@
 
 All notable changes to **Stride Lite** are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.15.0] — 2026-09-06
+## [0.16.0] — 2026-09-07
 
 ### Added — a back-reference beside every anchored rule (W2138)
 
 Four paragraphs close this port's five anchored governed-rule statements: the decision matrix and its precedence block in `lib/select_workflow_branch.md`, the cosmetic class and the verdict-note rule in `agents/task-reviewer.md`, and the review ceiling in the workflow skill. The matrix pair shares one paragraph, because both anchors sit three lines apart over the same table and one paragraph naming both entries discharges both.
 
 Each says three things and stops: which canon entry owns the rule, that the wording here is this port's own and free to change, and that altering what the rule requires moves two version numbers rather than one. None repeats what the rule requires — a second copy of the substance is the drift the canon exists to catch. None writes the anchor comment's own token either, because this port's suite counts those tokens and a quoted one would read as a second anchor.
+
+## [0.15.0] — 2026-09-06
 
 ### Changed — the review loop's ceiling is two rounds, and reaching it records rather than stops (W2170)
 
