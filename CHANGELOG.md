@@ -4,6 +4,12 @@ All notable changes to **Stride Lite** are documented in this file. The format i
 
 ## [0.15.0] — 2026-09-06
 
+### Added — a back-reference beside every anchored rule (W2138)
+
+Four paragraphs close this port's five anchored governed-rule statements: the decision matrix and its precedence block in `lib/select_workflow_branch.md`, the cosmetic class and the verdict-note rule in `agents/task-reviewer.md`, and the review ceiling in the workflow skill. The matrix pair shares one paragraph, because both anchors sit three lines apart over the same table and one paragraph naming both entries discharges both.
+
+Each says three things and stops: which canon entry owns the rule, that the wording here is this port's own and free to change, and that altering what the rule requires moves two version numbers rather than one. None repeats what the rule requires — a second copy of the substance is the drift the canon exists to catch. None writes the anchor comment's own token either, because this port's suite counts those tokens and a quoted one would read as a second anchor.
+
 ### Changed — the review loop's ceiling is two rounds, and reaching it records rather than stops (W2170)
 
 `max_review_iterations` defaulted to three and reaching it did one thing: clear the marker, surface the failing review, write no Completion Summary. The fleet canon (`stride/docs/port-canon.md`, entry `review-round-cap`) puts the ceiling at two and makes the terminus depend on what is still outstanding, and both of its applicability grounds hold here — this port runs a reviewer and a fix-then-re-review loop that can fail to converge. So the rule is adopted rather than narrowed.
