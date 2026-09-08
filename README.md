@@ -256,6 +256,30 @@ So a one-line typo fix costs no agent dispatches, while anything touching two or
 
 The skill never POSTs to any API — it's a file-only orchestrator wrapping the existing surface (create-goal, create-task, init, task-enricher, task-explorer, task-reviewer). See `skills/stride-lite-workflow/SKILL.md` for the full contract.
 
+### Ending a session, and why nothing here refuses one
+
+<!-- canon:stop-hook-capability v1 -->
+
+**Canon-governed — entry `stop-hook-capability` in `stride/docs/port-canon.md`.**
+This is where this port records how its runtime ends a session; a change to what
+that rule obliges moves the canon entry's version and the anchor above together.
+
+Claude Code, the only runtime this plugin targets, *can* be refused a session
+end: it fires `Stop`, and a hook that writes a decision document to stdout is
+honoured. The capability is there. **This port ships no stop gate anyway**, and
+the reason is worth stating plainly rather than leaving as an apparent oversight:
+the gates elsewhere in the fleet refuse on one condition — a task was completed
+and claimable work is still queued behind it — and neither half of that condition
+has a signal here. Stride Lite writes markdown and makes no API calls, so there
+is no Ready column to ask about and no completion record for a gate to read.
+
+So the absence is a missing *condition*, not a missing capability — which is why
+it is not the kind of structural incapability that would put this rule outside
+what this port owes. Should this plugin ever learn to track work it has handed
+on, the runtime side is already available and the gate becomes worth building.
+The rule's scope is the canon's to record; what belongs here is the fact it rests
+on.
+
 ## Output layout
 
 With both defaults left in place, every invocation lands under `docs/implementation/PENDING/`. Goals stay there while they are in flight; once `stride-lite-workflow` finishes a goal, its directory is moved to a sibling `IMPLEMENTED/` archive:

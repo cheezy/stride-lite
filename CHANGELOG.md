@@ -2,6 +2,23 @@
 
 All notable changes to **Stride Lite** are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added — why no stop gate ships here, stated rather than left blank (D306)
+
+Canon entry `stop-hook-capability` is required of this port and has read `MISSING`
+since it was registered, because nothing in this repository said anything about
+how a session ends. A new README section says it.
+
+The honest answer is not that the runtime cannot be refused. Claude Code fires
+`Stop` and honours a decision written to stdout — the capability is there, and
+the full Stride plugin uses it. What is missing is the thing a gate would ask
+about: this plugin writes markdown and makes no API calls, so there is no queue
+to consult and no completion record to read, and the condition the fleet's gates
+refuse on has no signal here. The canon row therefore stays `required` rather
+than being narrowed to `not_applicable`, which is reserved for a runtime that
+genuinely cannot refuse.
+
 ## [0.16.0] — 2026-09-07
 
 ### Added — a back-reference beside every anchored rule (W2138)
