@@ -273,6 +273,18 @@ and claimable work is still queued behind it — and neither half of that condit
 has a signal here. Stride Lite writes markdown and makes no API calls, so there
 is no Ready column to ask about and no completion record for a gate to read.
 
+**The same emptiness settles a second fleet rule — the stdout-preservation
+guard.** Elsewhere the fleet refuses a
+Stride API curl that hides its own response, because there the response is what a
+task's per-file diff gets parsed out of — conceal it and the diff is dropped with
+no error to notice. There is no such curl here to guard. This plugin POSTs to
+nothing, so no response passes through it, and a rule about preserving one has no
+subject in this repository. That is a narrower claim than the stop gate's: the
+gate is absent for want of a *condition* to refuse on, while the guard is absent
+for want of the *traffic* it would inspect. Both reopen together, and on the same
+trigger — if this plugin ever learns to talk to a board, it acquires a response
+worth preserving in the same change that gives it a queue worth gating.
+
 So the absence is a missing *condition*, not a missing capability — which is why
 it is not the kind of structural incapability that would put this rule outside
 what this port owes. Should this plugin ever learn to track work it has handed

@@ -4,6 +4,16 @@ All notable changes to **Stride Lite** are documented in this file. The format i
 
 ## [Unreleased]
 
+### Added — why the stdout-preservation curl guard has no subject here (W2186)
+
+The fleet refuses a Stride API curl that conceals its own response, because in the
+plugins that call a board that response is where a task's per-file diff is parsed
+from. This plugin issues no such request, so there is no response to conceal. The
+README now says so beside the stop-gate section, which rests on a different
+absence: the gate wants a condition to refuse on, the guard wants traffic to
+inspect, and this port has neither. Recorded as a current fact with a reopen
+condition rather than as a permanent exemption.
+
 ### Fixed — the reason_code paragraph no longer claims the canon requires the vocabulary of every port (D300)
 
 The non-adoption paragraph in `skills/stride-lite-workflow/SKILL.md` described
