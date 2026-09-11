@@ -4,6 +4,27 @@ All notable changes to **Stride Lite** are documented in this file. The format i
 
 ## [Unreleased]
 
+### Fixed — the reason_code paragraph no longer claims the canon requires the vocabulary of every port (D300)
+
+The non-adoption paragraph in `skills/stride-lite-workflow/SKILL.md` described
+entry `reason-code-vocabulary` as marking the closed six-value set "required for
+every port". It never did. The canon requires it of the seven ports that emit a
+`workflow_steps` object and narrows the two that do not — this port and
+`stride-opencode-lite` — to `not_applicable`, on the transport grounds the
+paragraph itself goes on to give. The clause now says the canon requires it of
+every port that emits one, which is both true and the premise the rest of the
+paragraph already rests on.
+
+Nothing else moved. The non-adoption decision, its structural grounds and the
+reopen condition are unchanged, no canon anchor was added, and the paragraph that
+follows — which already names D302 and `not_applicable` correctly after W2170 —
+was left alone.
+
+The 0.14.0 entry below carries the same overtaken claim and is again left
+standing. A dated entry records what a release said at the time; the canon's own
+rule is that a changelog is not an edit site, and rewriting one to track a rule
+change would falsify the record.
+
 ### Added — why no stop gate ships here, stated rather than left blank (D306)
 
 Canon entry `stop-hook-capability` is required of this port and has read `MISSING`
