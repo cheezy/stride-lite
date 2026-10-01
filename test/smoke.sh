@@ -4307,7 +4307,7 @@ for _f in "$REPO_ROOT"/*.md "$REPO_ROOT"/lib/*.md "$REPO_ROOT"/commands/*.md \
   [ -n "$_u" ] && FENCE_WIDE_BAD="$FENCE_WIDE_BAD ${_f#"$REPO_ROOT/"}:$_u"
 done
 assert_eq "the wider fence sweep covered every remaining markdown file" \
-  "$FENCE_WIDE_N" "15"
+  "$FENCE_WIDE_N" "16"
 assert_eq "every other shipped markdown file pairs its fences too" \
   "$FENCE_WIDE_BAD" ""
 

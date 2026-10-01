@@ -48,6 +48,7 @@ stride-lite/
   AGENTS.md                     ← this file
   SECURITY.md                   ← threat surface: what executes, what the marker is not, the cross-plugin dispatches, reporting
   CHANGELOG.md                  ← Keep-a-Changelog entries; the version itself lives ONLY in .claude-plugin/plugin.json
+  RELEASE.md                    ← how a release is cut: version, changelog stamp, tag, and the stride-marketplace pin
   LICENSE                       ← MIT
 ```
 

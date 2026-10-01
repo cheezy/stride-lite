@@ -6,7 +6,7 @@ Stride Lite is useful when you want the Stride field discipline (acceptance crit
 
 ## Installation
 
-Stride Lite is currently Claude Code only and ships as a manual install (no marketplace yet).
+Stride Lite is currently Claude Code only. It is listed in the [`stride-marketplace`](https://github.com/cheezy/stride-marketplace) catalog (`/plugin marketplace add cheezy/stride-marketplace`, then `/plugin install stride-lite@stride-marketplace`), and the manual install below works as well.
 
 ```bash
 git clone https://github.com/cheezy/stride-lite.git ~/dev/stride-lite
@@ -325,7 +325,7 @@ The terminal PENDING → IMPLEMENTED move (added in **v0.10.0**) is performed by
 - **No Stride API calls.** Stride Lite writes markdown to disk. It does not POST, claim, complete, or interact with any kanban server.
 - **No `.stride_auth.md` or `.stride.md` required.** Those files are for the full Stride plugin. Stride Lite needs neither, and it never reads or writes `.stride/` — its own activation marker lives in `.stride-lite/`, so both plugins can be installed in one project.
 - **No server-mediated lifecycle.** The full Stride plugin runs `.stride.md` hooks against a kanban server lifecycle (claim → doing → review → done). Stride Lite has no server interaction — but as of v0.9.0 the `hooks/` enforcement layer auto-fires the three `.stride_lite.md` hooks (`before_task`, `after_task`, `after_goal`) directly from Claude Code's PreToolUse/PostToolUse harness at the corresponding intercept points in the workflow skill's file-based loop.
-- **No marketplace, no Codex/Cursor/Continue support currently.** Claude Code only, manual install only. Multi-harness support and a marketplace listing are slated for later releases.
+- **No Codex/Cursor/Continue support currently.** Claude Code only, installed from the `stride-marketplace` catalog or manually. Multi-harness support is slated for later releases.
 
 ## Security
 
