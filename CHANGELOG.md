@@ -2,7 +2,7 @@
 
 All notable changes to **Stride Lite** are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.17.0] — 2026-10-01
 
 ### Added — why the stdout-preservation curl guard has no subject here (W2186)
 
@@ -49,6 +49,12 @@ to consult and no completion record to read, and the condition the fleet's gates
 refuse on has no signal here. The canon row therefore stays `required` rather
 than being narrowed to `not_applicable`, which is reserved for a runtime that
 genuinely cannot refuse.
+
+### Added — a release runbook for this repository (W2173)
+
+`RELEASE.md` records how this repository is released, as its own history shows it: which file holds the version, how the changelog is shaped (with any ambiguity in that history stated rather than resolved), whether a catalog must be synced afterwards, and the one-line check for whether the changelog's top heading is already tagged — the check that would have caught entries appended under a released heading. Documentation only; no behaviour changes.
+
+The README said twice that Stride Lite has no marketplace. `stride-marketplace` has listed it for some time, so both places now say how to install from it. `AGENTS.md`'s layout block lists the new file, and the smoke suite's pinned count of root-level markdown files moves by one to include it.
 
 ## [0.16.0] — 2026-09-07
 
